@@ -5,11 +5,13 @@ import { JobCard } from './components/JobCard';
 import { PdfPreviewModal } from './components/PdfPreviewModal';
 import { TocInspectorModal } from './components/TocInspectorModal';
 import { UploadDropzone } from './components/UploadDropzone';
+import { useLanguage } from './i18n/LanguageContext';
 import { HeadingItem, ProcessedJob } from './types/toc';
 import { getBaseName } from './utils/headingParser';
 import type { BodyParagraphRenderItem } from './utils/pdfRenderer';
 
 export const App: React.FC = () => {
+  const { t, language } = useLanguage();
   const [jobs, setJobs] = useState<ProcessedJob[]>([]);
   const [editingJob, setEditingJob] = useState<ProcessedJob | null>(null);
   const [previewPdf, setPreviewPdf] = useState<{ title: string; url: string } | null>(null);
@@ -39,7 +41,7 @@ export const App: React.FC = () => {
           updateJobState(jobId, (prev) => ({
             ...prev,
             status: 'done',
-            stepLabel: 'Hoàn tất',
+            stepLabel: language === 'en' ? 'Completed' : 'Hoàn tất',
             progress: 100,
             baseName: result.baseName,
             headings: result.headings,
@@ -52,13 +54,13 @@ export const App: React.FC = () => {
             updateJobState(jobId, (prev) => ({ ...prev, stepLabel, progress }));
           });
 
-          // Lưu bản PDF nội dung (đã giữ số trang gốc hoặc đã đóng dấu số trang) để tái tạo nhanh nếu sửa TOC
+          // Lưu bản PDF nội dung để tái tạo nhanh nếu sửa TOC
           pdfContentBytesCache.current.set(jobId, result.workingContentPdfBytes);
 
           updateJobState(jobId, (prev) => ({
             ...prev,
             status: 'done',
-            stepLabel: 'Hoàn tất',
+            stepLabel: language === 'en' ? 'Completed' : 'Hoàn tất',
             progress: 100,
             baseName: result.baseName,
             headings: result.headings,
@@ -68,16 +70,16 @@ export const App: React.FC = () => {
           }));
         }
       } catch (err) {
-        const message = err instanceof Error ? err.message : 'Lỗi không xác định khi xử lý tệp.';
+        const message = err instanceof Error ? err.message : 'Error processing document';
         updateJobState(jobId, (prev) => ({
           ...prev,
           status: 'error',
-          stepLabel: 'Lỗi xử lý',
+          stepLabel: language === 'en' ? 'Error' : 'Lỗi xử lý',
           errorMessage: message,
         }));
       }
     },
-    [updateJobState]
+    [language, updateJobState]
   );
 
   const handleFilesSelected = useCallback(
@@ -88,7 +90,7 @@ export const App: React.FC = () => {
       });
 
       if (validFiles.length === 0) {
-        alert('Vui lòng chọn tệp có định dạng .doc, .docx hoặc .pdf');
+        alert(language === 'en' ? 'Please select .doc, .docx or .pdf files' : 'Vui lòng chọn tệp có định dạng .doc, .docx hoặc .pdf');
         return;
       }
 
@@ -100,7 +102,7 @@ export const App: React.FC = () => {
           baseName: getBaseName(file.name),
           flow: isPdf ? 'B' : 'A',
           status: 'processing',
-          stepLabel: 'Đang khởi tạo...',
+          stepLabel: language === 'en' ? 'Initializing...' : 'Đang khởi tạo...',
           progress: 5,
           headings: [],
           outputs: [],
@@ -114,7 +116,7 @@ export const App: React.FC = () => {
         void runSingleFileJob(job.originalFile, job.id, job.flow);
       });
     },
-    [runSingleFileJob]
+    [language, runSingleFileJob]
   );
 
   const handleRunSampleWord = async () => {
@@ -199,7 +201,7 @@ export const App: React.FC = () => {
       const url = URL.createObjectURL(zipBlob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `Ket_Qua_Muc_Luc_In_An_${completedJobs.length}_Tai_Lieu.zip`;
+      a.download = `${t.app.zipFileName}_${completedJobs.length}_files.zip`;
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
@@ -232,7 +234,7 @@ export const App: React.FC = () => {
             <div className="flex items-center gap-2 text-xs font-semibold text-slate-700 sm:text-sm">
               <Layers className="h-4 w-4 text-blue-600" />
               <span>
-                Danh sách tài liệu ({completedCount}/{jobs.length} hoàn tất)
+                {t.app.docListTitle} ({completedCount}/{jobs.length} {t.app.completedCount})
               </span>
             </div>
 
@@ -242,10 +244,10 @@ export const App: React.FC = () => {
                   type="button"
                   disabled={isZipping}
                   onClick={handleDownloadAllZip}
-                  className="inline-flex items-center gap-1.5 rounded-xl bg-emerald-600 px-3.5 py-2 text-xs font-semibold text-white shadow-sm transition hover:bg-emerald-700 disabled:opacity-50"
+                  className="inline-flex items-center gap-1.5 rounded-xl bg-emerald-600 px-3.5 py-2 text-xs font-semibold text-white shadow-xs transition hover:bg-emerald-700 disabled:opacity-50"
                 >
                   <Archive className="h-4 w-4" />
-                  {isZipping ? 'Đang nén ZIP...' : 'Tải trọn bộ tất cả (.ZIP)'}
+                  {isZipping ? t.app.zipping : t.app.downloadAllZip}
                 </button>
               )}
 
@@ -255,7 +257,7 @@ export const App: React.FC = () => {
                 className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-600 transition hover:bg-slate-100"
               >
                 <Trash2 className="h-3.5 w-3.5" />
-                Xóa danh sách
+                {t.app.clearList}
               </button>
             </div>
           </div>
@@ -280,26 +282,26 @@ export const App: React.FC = () => {
             <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-xs">
               <div className="mb-2 inline-flex items-center gap-1.5 rounded-lg bg-blue-50 px-2.5 py-1 text-xs font-bold text-blue-700">
                 <CheckCircle className="h-3.5 w-3.5" />
-                LUỒNG A: Tệp Word (.doc / .docx)
+                {t.app.flowABoxTitle}
               </div>
               <ul className="mt-2 space-y-1.5 text-xs text-slate-600 sm:text-sm">
-                <li>• Nhận diện đề mục Cấp 1 & Cấp 2 (VI/EN) + Ghép dòng tiêu đề bị ngắt.</li>
-                <li>• Chèn trang Mục lục chuẩn <code className="font-semibold text-slate-800">Times New Roman</code> ở Trang 1, đẩy nội dung gốc sang Trang 2.</li>
-                <li>• Đánh số trang tự động liên tục từ 1 ở <strong>Chính giữa chân trang (Footer - Center)</strong>.</li>
-                <li>• Xuất 2 tệp: <code className="text-blue-700">&lt;Base_Name&gt;_muc_luc.docx</code> và <code className="text-rose-700">&lt;Base_Name&gt; (in ấn).pdf</code>.</li>
+                <li>• {t.app.flowABoxPoint1}</li>
+                <li>• {t.app.flowABoxPoint2}</li>
+                <li>• {t.app.flowABoxPoint3}</li>
+                <li>• {t.app.flowABoxPoint4}</li>
               </ul>
             </div>
 
             <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-xs">
               <div className="mb-2 inline-flex items-center gap-1.5 rounded-lg bg-emerald-50 px-2.5 py-1 text-xs font-bold text-emerald-700">
                 <CheckCircle className="h-3.5 w-3.5" />
-                LUỒNG B: Tệp PDF (.pdf có chữ ký / con dấu)
+                {t.app.flowBBoxTitle}
               </div>
               <ul className="mt-2 space-y-1.5 text-xs text-slate-600 sm:text-sm">
-                <li>• Quét vùng Header/Footer: Nếu <strong>đã có sẵn số trang</strong> sẽ giữ nguyên 100%; nếu <strong>chưa có</strong> sẽ tự đánh số từ 1 ở giữa Footer.</li>
-                <li>• Tạo mục lục rời Tab Leader chấm bi (<code className="font-semibold text-slate-800">.........</code>), không đánh số trang trên tệp mục lục.</li>
-                <li>• Nối trang Mục lục lên trước trang 1 của PDF gốc, bảo toàn 100% vector & con dấu đỏ.</li>
-                <li>• Xuất 3 tệp: <code className="text-blue-700">[Mục Lục] &lt;Base_Name&gt;.docx</code>, <code className="text-rose-700">[Mục Lục] &lt;Base_Name&gt;.pdf</code> và <code className="text-rose-700">&lt;Base_Name&gt; (in ấn).pdf</code>.</li>
+                <li>• {t.app.flowBBoxPoint1}</li>
+                <li>• {t.app.flowBBoxPoint2}</li>
+                <li>• {t.app.flowBBoxPoint3}</li>
+                <li>• {t.app.flowBBoxPoint4}</li>
               </ul>
             </div>
           </section>

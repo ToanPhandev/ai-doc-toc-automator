@@ -10,6 +10,7 @@ import {
   Loader2,
   Trash2,
 } from 'lucide-react';
+import { useLanguage } from '../i18n/LanguageContext';
 import { OutputFileItem, ProcessedJob } from '../types/toc';
 
 interface JobCardProps {
@@ -25,12 +26,13 @@ export const JobCard: React.FC<JobCardProps> = ({
   onPreviewPdf,
   onRemoveJob,
 }) => {
+  const { t } = useLanguage();
   const printPdfOutput: OutputFileItem | undefined = job.outputs.find((o) =>
     o.name.endsWith('(in ấn).pdf')
   );
 
   return (
-    <article className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm transition hover:shadow-md">
+    <article className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-xs transition hover:shadow-md">
       {/* Thanh tiêu đề thẻ tài liệu */}
       <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 bg-slate-50/70 px-4 py-3.5 sm:px-6">
         <div className="flex min-w-0 items-center gap-3">
@@ -41,7 +43,7 @@ export const JobCard: React.FC<JobCardProps> = ({
                 : 'bg-emerald-100 text-emerald-800'
             }`}
           >
-            {job.flow === 'A' ? 'Luồng A • Word' : 'Luồng B • PDF'}
+            {job.flow === 'A' ? t.jobCard.flowA : t.jobCard.flowB}
           </span>
 
           <h3 className="truncate text-sm font-bold text-slate-900 sm:text-base">
@@ -60,21 +62,21 @@ export const JobCard: React.FC<JobCardProps> = ({
           {job.status === 'done' && (
             <span className="inline-flex items-center gap-1.5 rounded-full bg-emerald-50 px-3 py-1 text-xs font-semibold text-emerald-700">
               <CheckCircle2 className="h-3.5 w-3.5" />
-              Hoàn tất ({job.headings.length} đề mục)
+              {t.jobCard.statusDone} ({job.headings.length} {t.jobCard.headingsCount})
             </span>
           )}
 
           {job.status === 'error' && (
             <span className="inline-flex items-center gap-1.5 rounded-full bg-rose-50 px-3 py-1 text-xs font-semibold text-rose-700">
               <AlertCircle className="h-3.5 w-3.5" />
-              Lỗi xử lý
+              {t.jobCard.statusError}
             </span>
           )}
 
           <button
             type="button"
             onClick={() => onRemoveJob(job.id)}
-            title="Xóa khỏi danh sách"
+            title={t.jobCard.removeTooltip}
             className="rounded-lg p-1.5 text-slate-400 transition hover:bg-slate-200/60 hover:text-slate-600"
           >
             <Trash2 className="h-4 w-4" />
@@ -98,7 +100,7 @@ export const JobCard: React.FC<JobCardProps> = ({
       {/* Thông báo lỗi nếu có */}
       {job.status === 'error' && (
         <div className="p-4 text-sm text-rose-600 sm:px-6">
-          Không thể xử lý tệp: {job.errorMessage}
+          {t.jobCard.statusError}: {job.errorMessage}
         </div>
       )}
 
@@ -110,7 +112,7 @@ export const JobCard: React.FC<JobCardProps> = ({
             <div className="mb-2.5 flex flex-wrap items-center justify-between gap-2">
               <div className="flex flex-wrap items-center gap-2">
                 <span className="text-xs font-bold uppercase tracking-wider text-slate-500">
-                  Bản xem trước Trang Mục Lục (Times New Roman)
+                  {t.jobCard.inspectTocBtn} (Times New Roman)
                 </span>
                 {job.flow === 'B' && (
                   <span
@@ -121,8 +123,8 @@ export const JobCard: React.FC<JobCardProps> = ({
                     }`}
                   >
                     {job.hadExistingPageNumbers
-                      ? 'Đã có sẵn số trang • Giữ nguyên gốc 100%'
-                      : 'Chưa có số trang • Đã đánh số giữa Footer (từ 1)'}
+                      ? t.jobCard.preservedPagesBadge
+                      : t.jobCard.stampedPagesBadge}
                   </span>
                 )}
               </div>
@@ -133,7 +135,7 @@ export const JobCard: React.FC<JobCardProps> = ({
                 className="inline-flex items-center gap-1.5 rounded-lg bg-slate-100 px-2.5 py-1 text-xs font-semibold text-slate-700 transition hover:bg-blue-50 hover:text-blue-700"
               >
                 <Edit3 className="h-3.5 w-3.5" />
-                Chỉnh sửa đề mục
+                {t.jobCard.inspectTocBtn}
               </button>
             </div>
 
@@ -143,12 +145,12 @@ export const JobCard: React.FC<JobCardProps> = ({
                 {job.baseName}
               </div>
               <div className="mb-3 text-center text-sm font-bold uppercase sm:text-base">
-                MỤC LỤC
+                TABLE OF CONTENTS / MỤC LỤC
               </div>
 
               {job.headings.length === 0 ? (
                 <p className="py-4 text-center text-xs italic text-slate-500">
-                  (Không tìm thấy đề mục tự động. Bấm &ldquo;Chỉnh sửa đề mục&rdquo; để thêm thủ công)
+                  {t.tocModal.emptyNotice}
                 </p>
               ) : (
                 <ul className="space-y-1.5 text-xs sm:text-[13.5px]">
@@ -179,7 +181,7 @@ export const JobCard: React.FC<JobCardProps> = ({
             <div>
               <div className="mb-2.5 flex items-center justify-between">
                 <span className="text-xs font-bold uppercase tracking-wider text-slate-500">
-                  Tệp đầu ra bắt buộc ({job.outputs.length} tệp)
+                  {job.outputs.length} {t.app.docListTitle}
                 </span>
                 {printPdfOutput && (
                   <button
@@ -188,7 +190,7 @@ export const JobCard: React.FC<JobCardProps> = ({
                     className="inline-flex items-center gap-1.5 rounded-lg bg-blue-50 px-2.5 py-1 text-xs font-semibold text-blue-700 transition hover:bg-blue-100"
                   >
                     <Eye className="h-3.5 w-3.5" />
-                    Xem trước PDF in ấn
+                    {t.jobCard.previewPdfBtn}
                   </button>
                 )}
               </div>
@@ -228,7 +230,7 @@ export const JobCard: React.FC<JobCardProps> = ({
                         <button
                           type="button"
                           onClick={() => onPreviewPdf(out.name, out.url)}
-                          title="Xem trực tiếp PDF"
+                          title={t.jobCard.previewPdfBtn}
                           className="rounded-lg border border-slate-200 bg-white p-2 text-slate-600 transition hover:border-blue-400 hover:text-blue-600"
                         >
                           <Eye className="h-4 w-4" />
@@ -237,10 +239,10 @@ export const JobCard: React.FC<JobCardProps> = ({
                       <a
                         href={out.url}
                         download={out.name}
-                        className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-3 py-2 text-xs font-semibold text-white shadow-sm transition hover:bg-blue-700"
+                        className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-3 py-2 text-xs font-semibold text-white shadow-xs transition hover:bg-blue-700"
                       >
                         <Download className="h-3.5 w-3.5" />
-                        <span>Tải về</span>
+                        <span>{t.jobCard.downloadBtn}</span>
                       </a>
                     </div>
                   </div>

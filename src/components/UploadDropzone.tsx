@@ -1,5 +1,6 @@
 import React, { useRef, useState } from 'react';
 import { FileSpreadsheet, FileText, FlaskConical, UploadCloud } from 'lucide-react';
+import { useLanguage } from '../i18n/LanguageContext';
 
 interface UploadDropzoneProps {
   onFilesSelected: (files: File[]) => void;
@@ -16,6 +17,7 @@ export const UploadDropzone: React.FC<UploadDropzoneProps> = ({
   onRunSamplePdfWithNumber,
   isBusy,
 }) => {
+  const { t } = useLanguage();
   const inputRef = useRef<HTMLInputElement | null>(null);
   const [isDragging, setIsDragging] = useState(false);
 
@@ -48,7 +50,7 @@ export const UploadDropzone: React.FC<UploadDropzoneProps> = ({
   };
 
   return (
-    <section className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:p-6">
+    <section className="rounded-2xl border border-slate-200 bg-white p-4 shadow-xs sm:p-6">
       <div
         onDragOver={handleDragOver}
         onDragLeave={handleDragLeave}
@@ -79,20 +81,20 @@ export const UploadDropzone: React.FC<UploadDropzoneProps> = ({
         </div>
 
         <h2 className="text-base font-bold text-slate-900 sm:text-lg">
-          Chạm để chọn file hoặc Kéo thả tài liệu vào đây
+          {t.dropzone.dragDropTitle}
         </h2>
         <p className="mt-1 max-w-xl text-xs text-slate-500 sm:text-sm">
-          Đưa file vào là hệ thống <span className="font-semibold text-slate-700">tự động chạy từ A–Z</span>. Hỗ trợ chọn 1 file hoặc hàng loạt file cùng lúc.
+          {t.dropzone.dragDropSubtitle}
         </p>
 
         <div className="mt-4 flex flex-wrap items-center justify-center gap-2">
-          <span className="inline-flex items-center gap-1.5 rounded-full bg-white px-3 py-1 text-xs font-medium text-slate-700 shadow-sm ring-1 ring-slate-200">
+          <span className="inline-flex items-center gap-1.5 rounded-full bg-white px-3 py-1 text-xs font-medium text-slate-700 shadow-xs ring-1 ring-slate-200">
             <FileText className="h-3.5 w-3.5 text-blue-600" />
             Word (.docx, .doc)
           </span>
-          <span className="inline-flex items-center gap-1.5 rounded-full bg-white px-3 py-1 text-xs font-medium text-slate-700 shadow-sm ring-1 ring-slate-200">
+          <span className="inline-flex items-center gap-1.5 rounded-full bg-white px-3 py-1 text-xs font-medium text-slate-700 shadow-xs ring-1 ring-slate-200">
             <FileSpreadsheet className="h-3.5 w-3.5 text-rose-600" />
-            PDF (.pdf có chữ ký / con dấu)
+            PDF (.pdf)
           </span>
         </div>
       </div>
@@ -101,7 +103,7 @@ export const UploadDropzone: React.FC<UploadDropzoneProps> = ({
       <div className="mt-4 flex flex-col justify-between gap-2.5 rounded-xl bg-slate-50 p-3 sm:flex-row sm:items-center">
         <div className="flex items-center gap-2 text-xs font-medium text-slate-600">
           <FlaskConical className="h-4 w-4 shrink-0 text-blue-600" />
-          <span>Chưa sẵn file trên máy? Bấm chạy thử ngay kịch bản mẫu:</span>
+          <span>{t.dropzone.sampleSectionTitle}</span>
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
@@ -109,25 +111,25 @@ export const UploadDropzone: React.FC<UploadDropzoneProps> = ({
             type="button"
             disabled={isBusy}
             onClick={onRunSampleWord}
-            className="inline-flex flex-1 items-center justify-center gap-1.5 rounded-lg bg-white px-3 py-1.5 text-xs font-semibold text-blue-700 shadow-sm ring-1 ring-slate-200 transition hover:bg-blue-50 disabled:opacity-50 sm:flex-initial"
+            className="inline-flex flex-1 items-center justify-center gap-1.5 rounded-lg bg-white px-3 py-1.5 text-xs font-semibold text-blue-700 shadow-xs ring-1 ring-slate-200 transition hover:bg-blue-50 disabled:opacity-50 sm:flex-initial"
           >
-            Mẫu Luồng A (Hiến pháp 2013.docx)
+            {t.dropzone.sampleWordBtn}
           </button>
           <button
             type="button"
             disabled={isBusy}
             onClick={onRunSamplePdfNoNumber}
-            className="inline-flex flex-1 items-center justify-center gap-1.5 rounded-lg bg-white px-3 py-1.5 text-xs font-semibold text-emerald-700 shadow-sm ring-1 ring-slate-200 transition hover:bg-emerald-50 disabled:opacity-50 sm:flex-initial"
+            className="inline-flex flex-1 items-center justify-center gap-1.5 rounded-lg bg-white px-3 py-1.5 text-xs font-semibold text-emerald-700 shadow-xs ring-1 ring-slate-200 transition hover:bg-emerald-50 disabled:opacity-50 sm:flex-initial"
           >
-            Mẫu Luồng B (PDF chưa đánh số trang)
+            {t.dropzone.samplePdfNoNumBtn}
           </button>
           <button
             type="button"
             disabled={isBusy}
             onClick={onRunSamplePdfWithNumber}
-            className="inline-flex flex-1 items-center justify-center gap-1.5 rounded-lg bg-white px-3 py-1.5 text-xs font-semibold text-amber-700 shadow-sm ring-1 ring-slate-200 transition hover:bg-amber-50 disabled:opacity-50 sm:flex-initial"
+            className="inline-flex flex-1 items-center justify-center gap-1.5 rounded-lg bg-white px-3 py-1.5 text-xs font-semibold text-amber-700 shadow-xs ring-1 ring-slate-200 transition hover:bg-amber-50 disabled:opacity-50 sm:flex-initial"
           >
-            Mẫu Luồng B (PDF đã có số trang)
+            {t.dropzone.samplePdfWithNumBtn}
           </button>
         </div>
       </div>
