@@ -1,5 +1,5 @@
 import React, { useCallback, useRef, useState } from 'react';
-import { Archive, CheckCircle, Layers, Trash2 } from 'lucide-react';
+import { Archive, Layers, Trash2 } from 'lucide-react';
 import { Header } from './components/Header';
 import { JobCard } from './components/JobCard';
 import { PdfPreviewModal } from './components/PdfPreviewModal';
@@ -156,7 +156,6 @@ export const App: React.FC = () => {
         outputs: newOutputs,
       }));
     } else {
-      // Luồng B: Tái tạo 3 tệp đầu ra với danh sách mục lục mới
       const { buildPdfFlowOutputs, processPdfDocument } = await import('./utils/pdfProcessor');
       let contentBytes = pdfContentBytesCache.current.get(jobId);
       if (!contentBytes) {
@@ -264,7 +263,7 @@ export const App: React.FC = () => {
         )}
 
         {/* Danh sách các thẻ tài liệu đang xử lý / đã hoàn tất */}
-        {jobs.length > 0 ? (
+        {jobs.length > 0 && (
           <div className="space-y-4">
             {jobs.map((job) => (
               <JobCard
@@ -276,35 +275,6 @@ export const App: React.FC = () => {
               />
             ))}
           </div>
-        ) : (
-          /* Tóm tắt quy chuẩn 2 luồng khi chưa có tài liệu nào */
-          <section className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-            <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-xs">
-              <div className="mb-2 inline-flex items-center gap-1.5 rounded-lg bg-blue-50 px-2.5 py-1 text-xs font-bold text-blue-700">
-                <CheckCircle className="h-3.5 w-3.5" />
-                {t.app.flowABoxTitle}
-              </div>
-              <ul className="mt-2 space-y-1.5 text-xs text-slate-600 sm:text-sm">
-                <li>• {t.app.flowABoxPoint1}</li>
-                <li>• {t.app.flowABoxPoint2}</li>
-                <li>• {t.app.flowABoxPoint3}</li>
-                <li>• {t.app.flowABoxPoint4}</li>
-              </ul>
-            </div>
-
-            <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-xs">
-              <div className="mb-2 inline-flex items-center gap-1.5 rounded-lg bg-emerald-50 px-2.5 py-1 text-xs font-bold text-emerald-700">
-                <CheckCircle className="h-3.5 w-3.5" />
-                {t.app.flowBBoxTitle}
-              </div>
-              <ul className="mt-2 space-y-1.5 text-xs text-slate-600 sm:text-sm">
-                <li>• {t.app.flowBBoxPoint1}</li>
-                <li>• {t.app.flowBBoxPoint2}</li>
-                <li>• {t.app.flowBBoxPoint3}</li>
-                <li>• {t.app.flowBBoxPoint4}</li>
-              </ul>
-            </div>
-          </section>
         )}
       </main>
 

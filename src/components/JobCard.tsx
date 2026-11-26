@@ -43,7 +43,7 @@ export const JobCard: React.FC<JobCardProps> = ({
                 : 'bg-emerald-100 text-emerald-800'
             }`}
           >
-            {job.flow === 'A' ? t.jobCard.flowA : t.jobCard.flowB}
+            {job.flow === 'A' ? t.jobCard.wordBadge : t.jobCard.pdfBadge}
           </span>
 
           <h3 className="truncate text-sm font-bold text-slate-900 sm:text-base">
