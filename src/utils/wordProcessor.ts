@@ -36,6 +36,99 @@ function getMedian(values: number[], fallback = 13.0): number {
   return sorted.length % 2 !== 0 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
 }
 
+function decodeHtmlEntities(str: string): string {
+  return str
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&amp;/gi, '&')
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;/gi, "'")
+    .replace(/&#(\d+);/g, (_, dec) => {
+      try {
+        return String.fromCharCode(parseInt(dec, 10));
+      } catch {
+        return '';
+      }
+    })
+    .replace(/&#x([0-9a-f]+);/gi, (_, hex) => {
+      try {
+        return String.fromCharCode(parseInt(hex, 16));
+      } catch {
+        return '';
+      }
+    });
+}
+
+interface ParsedDocParagraphItem {
+  text: string;
+  isBold: boolean;
+  isCentered: boolean;
+  isRight: boolean;
+  isHeadingCandidate: boolean;
+}
+
+function parseWordHtmlToParagraphItems(html: string): ParsedDocParagraphItem[] {
+  const clean = html
+    .replace(/<!--[\s\S]*?-->/g, '')
+    .replace(/<style[\s\S]*?<\/style>/gi, '')
+    .replace(/<script[\s\S]*?<\/script>/gi, '')
+    .replace(/<xml[\s\S]*?<\/xml>/gi, '')
+    .replace(/<!\[if[\s\S]*?<!\[endif\]>/gi, '');
+
+  const blockRegex = /<(p|h[1-6]|li)\b([^>]*)>([\s\S]*?)<\/\1>/gi;
+  const paragraphs: ParsedDocParagraphItem[] = [];
+  let match: RegExpExecArray | null;
+
+  while ((match = blockRegex.exec(clean)) !== null) {
+    const tagName = match[1].toLowerCase();
+    const attrs = match[2] || '';
+    const innerHtml = match[3] || '';
+
+    const isCentered = /align=['"]?center['"]?/i.test(attrs) || /text-align:\s*center/i.test(attrs);
+    const isRight = /align=['"]?right['"]?/i.test(attrs) || /text-align:\s*right/i.test(attrs);
+
+    const isTagBold =
+      tagName.startsWith('h') ||
+      /<b\b/i.test(innerHtml) ||
+      /<strong\b/i.test(innerHtml) ||
+      /font-weight:\s*bold/i.test(attrs) ||
+      /font-weight:\s*bold/i.test(innerHtml);
+
+    const subLines = innerHtml.split(/<br\s*\/?>/gi);
+    for (const sub of subLines) {
+      let rawText = sub.replace(/<[^>]+>/g, '');
+      rawText = decodeHtmlEntities(rawText)
+        .replace(/[\r\n\t]+/g, ' ')
+        .replace(/\s{2,}/g, ' ')
+        .trim();
+
+      // Bỏ qua các dòng gạch phân cách như "-------" hoặc "---------------"
+      if (/^[-–—_\s]+$/.test(rawText)) {
+        continue;
+      }
+
+      if (rawText.length > 0) {
+        const isHeadingCandidate =
+          /^(LỜI\s+NÓI\s+ĐẦU|QUYẾT\s+ĐỊNH|PHẦN|CHƯƠNG|MỤC|ĐIỀU|INTRODUCTION|PREFACE|PART|CHAPTER|SECTION|ARTICLE|CONCLUSION)\b/iu.test(
+            rawText
+          ) ||
+          (rawText === rawText.toUpperCase() && /\p{L}/u.test(rawText) && rawText.length < 120);
+
+        paragraphs.push({
+          text: rawText,
+          isBold: isTagBold || isHeadingCandidate,
+          isCentered,
+          isRight,
+          isHeadingCandidate,
+        });
+      }
+    }
+  }
+
+  return paragraphs;
+}
+
 /**
  * Trích xuất văn bản từ tệp .doc cũ (Word 97-2003 / RTF / HTML-doc) và chuyển đổi
  * thành cấu trúc .docx chuẩn để xử lý đồng nhất.
@@ -49,29 +142,56 @@ async function convertLegacyDocBufferToDocxZip(buffer: ArrayBuffer): Promise<JSZ
   const countReadable = (s: string) => (s.match(/[\p{L}\d\s.,:;!?()-]/gu) || []).length;
   const rawSource = countReadable(utf16Text) > countReadable(utf8Text) ? utf16Text : utf8Text;
 
-  // Làm sạch các khối nhị phân rác
-  const lines = rawSource
-    .replace(/\r\n/g, '\n')
-    .replace(/\r/g, '\n')
-    .split('\n')
-    .map((l) => l.replace(/[^\p{L}\p{N}\p{P}\p{Zs}]/gu, '').trim())
-    .filter((l) => l.length >= 2 && /[\p{L}\d]/u.test(l));
+  const isHtml =
+    /<html\b/i.test(rawSource) ||
+    /<w:WordDocument\b/i.test(rawSource) ||
+    /<!DOCTYPE\s+html/i.test(rawSource) ||
+    /<body\b/i.test(rawSource);
 
-  const children = lines.map((line) => {
-    const isHeadingCandidate =
-      /^(LỜI\s+NÓI\s+ĐẦU|QUYẾT\s+ĐỊNH|PHẦN|CHƯƠNG|MỤC|ĐIỀU|INTRODUCTION|PREFACE|PART|CHAPTER|SECTION|ARTICLE|CONCLUSION)\b/iu.test(
-        line
-      ) ||
-      (line === line.toUpperCase() && line.length < 120);
+  let parsedItems: ParsedDocParagraphItem[] = [];
+  if (isHtml) {
+    parsedItems = parseWordHtmlToParagraphItems(rawSource);
+  }
 
+  // Nếu không phải HTML hoặc parse HTML không ra dòng nào -> Fallback sang phân tích nhị phân thuần
+  if (parsedItems.length === 0) {
+    const lines = rawSource
+      .replace(/\r\n/g, '\n')
+      .replace(/\r/g, '\n')
+      .split('\n')
+      .map((l) => l.replace(/[^\p{L}\p{N}\p{P}\p{Zs}]/gu, '').trim())
+      .filter((l) => l.length >= 2 && /[\p{L}\d]/u.test(l));
+
+    parsedItems = lines.map((line) => {
+      const isHeadingCandidate =
+        /^(LỜI\s+NÓI\s+ĐẦU|QUYẾT\s+ĐỊNH|PHẦN|CHƯƠNG|MỤC|ĐIỀU|INTRODUCTION|PREFACE|PART|CHAPTER|SECTION|ARTICLE|CONCLUSION)\b/iu.test(
+          line
+        ) ||
+        (line === line.toUpperCase() && /\p{L}/u.test(line) && line.length < 120);
+
+      return {
+        text: line,
+        isBold: isHeadingCandidate,
+        isCentered: false,
+        isRight: false,
+        isHeadingCandidate,
+      };
+    });
+  }
+
+  const children = parsedItems.map((item) => {
     return new Paragraph({
-      alignment: AlignmentType.LEFT,
+      alignment: item.isCentered
+        ? AlignmentType.CENTER
+        : item.isRight
+        ? AlignmentType.RIGHT
+        : AlignmentType.LEFT,
       children: [
         new TextRun({
-          text: line,
+          text: item.text,
           font: 'Times New Roman',
-          size: isHeadingCandidate ? 27 : 26,
-          bold: isHeadingCandidate,
+          size: item.isHeadingCandidate ? 27 : 26,
+          bold: item.isBold,
         }),
       ],
     });
