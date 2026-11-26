@@ -2,6 +2,7 @@ import React from 'react';
 import {
   AlertCircle,
   CheckCircle2,
+  Clock,
   Download,
   Edit3,
   Eye,
@@ -20,7 +21,7 @@ interface JobCardProps {
   onRemoveJob: (id: string) => void;
 }
 
-export const JobCard: React.FC<JobCardProps> = ({
+export const JobCard: React.FC<JobCardProps> = React.memo(({
   job,
   onOpenTocEditor,
   onPreviewPdf,
@@ -52,6 +53,13 @@ export const JobCard: React.FC<JobCardProps> = ({
         </div>
 
         <div className="flex items-center gap-2">
+          {job.status === 'queued' && (
+            <span className="inline-flex items-center gap-1.5 rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-600">
+              <Clock className="h-3.5 w-3.5 text-slate-400" />
+              {t.jobCard.statusQueued}
+            </span>
+          )}
+
           {job.status === 'processing' && (
             <span className="inline-flex items-center gap-1.5 rounded-full bg-blue-50 px-3 py-1 text-xs font-semibold text-blue-700">
               <Loader2 className="h-3.5 w-3.5 animate-spin" />
@@ -83,6 +91,18 @@ export const JobCard: React.FC<JobCardProps> = ({
           </button>
         </div>
       </div>
+
+      {/* Thông báo trạng thái khi đang ở hàng chờ */}
+      {job.status === 'queued' && (
+        <div className="px-4 py-3.5 sm:px-6">
+          <div className="flex items-center gap-2 text-xs text-slate-500">
+            <span className="relative flex h-2 w-2">
+              <span className="inline-flex h-full w-full rounded-full bg-slate-400 opacity-75"></span>
+            </span>
+            <span>{job.stepLabel}</span>
+          </div>
+        </div>
+      )}
 
       {/* Thanh tiến trình tự động khi đang chạy */}
       {job.status === 'processing' && (
@@ -254,4 +274,4 @@ export const JobCard: React.FC<JobCardProps> = ({
       )}
     </article>
   );
-};
+});

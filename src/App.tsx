@@ -1,4 +1,4 @@
-import React, { useCallback, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Archive, Layers, Trash2 } from 'lucide-react';
 import { Header } from './components/Header';
 import { JobCard } from './components/JobCard';
@@ -9,6 +9,10 @@ import { useLanguage } from './i18n/LanguageContext';
 import { HeadingItem, ProcessedJob } from './types/toc';
 import { getBaseName } from './utils/headingParser';
 import type { BodyParagraphRenderItem } from './utils/pdfRenderer';
+import { processDocumentWithFallback } from './workers/workerManager';
+
+// Tối đa 5 Web Worker chạy song song ở luồng ngầm độc lập
+const MAX_CONCURRENT_JOBS = 5;
 
 export const App: React.FC = () => {
   const { t, language } = useLanguage();
@@ -21,6 +25,9 @@ export const App: React.FC = () => {
   const wordParagraphsCache = useRef<Map<string, BodyParagraphRenderItem[]>>(new Map());
   const pdfContentBytesCache = useRef<Map<string, Uint8Array | ArrayBuffer>>(new Map());
 
+  // Lưu vết danh sách ID của các tác vụ đang được kích hoạt chạy để tránh gọi đúp
+  const runningJobIdsRef = useRef<Set<string>>(new Set());
+
   const updateJobState = useCallback(
     (jobId: string, updater: (prev: ProcessedJob) => ProcessedJob) => {
       setJobs((prevJobs) => prevJobs.map((j) => (j.id === jobId ? updater(j) : j)));
@@ -31,44 +38,32 @@ export const App: React.FC = () => {
   const runSingleFileJob = useCallback(
     async (file: File, jobId: string, flow: 'A' | 'B') => {
       try {
-        if (flow === 'A') {
-          const { processWordDocument } = await import('./utils/wordProcessor');
-          const result = await processWordDocument(file, (stepLabel, progress) => {
+        const result = await processDocumentWithFallback(
+          file,
+          jobId,
+          flow,
+          (stepLabel, progress) => {
             updateJobState(jobId, (prev) => ({ ...prev, stepLabel, progress }));
-          });
+          }
+        );
+
+        if (flow === 'A' && result.paragraphs) {
           wordParagraphsCache.current.set(jobId, result.paragraphs);
-
-          updateJobState(jobId, (prev) => ({
-            ...prev,
-            status: 'done',
-            stepLabel: language === 'en' ? 'Completed' : 'Hoàn tất',
-            progress: 100,
-            baseName: result.baseName,
-            headings: result.headings,
-            totalPages: result.totalPages,
-            outputs: result.outputs,
-          }));
-        } else {
-          const { processPdfDocument } = await import('./utils/pdfProcessor');
-          const result = await processPdfDocument(file, (stepLabel, progress) => {
-            updateJobState(jobId, (prev) => ({ ...prev, stepLabel, progress }));
-          });
-
-          // Lưu bản PDF nội dung để tái tạo nhanh nếu sửa TOC
+        } else if (flow === 'B' && result.workingContentPdfBytes) {
           pdfContentBytesCache.current.set(jobId, result.workingContentPdfBytes);
-
-          updateJobState(jobId, (prev) => ({
-            ...prev,
-            status: 'done',
-            stepLabel: language === 'en' ? 'Completed' : 'Hoàn tất',
-            progress: 100,
-            baseName: result.baseName,
-            headings: result.headings,
-            hadExistingPageNumbers: result.hadExistingPageNumbers,
-            totalPages: result.totalPages,
-            outputs: result.outputs,
-          }));
         }
+
+        updateJobState(jobId, (prev) => ({
+          ...prev,
+          status: 'done',
+          stepLabel: language === 'en' ? 'Completed' : 'Hoàn tất',
+          progress: 100,
+          baseName: result.baseName,
+          headings: result.headings,
+          totalPages: result.totalPages,
+          hadExistingPageNumbers: result.hadExistingPageNumbers,
+          outputs: result.outputs,
+        }));
       } catch (err) {
         const message = err instanceof Error ? err.message : 'Error processing document';
         updateJobState(jobId, (prev) => ({
@@ -77,10 +72,37 @@ export const App: React.FC = () => {
           stepLabel: language === 'en' ? 'Error' : 'Lỗi xử lý',
           errorMessage: message,
         }));
+      } finally {
+        runningJobIdsRef.current.delete(jobId);
       }
     },
     [language, updateJobState]
   );
+
+  // Điều phối hàng đợi: Giới hạn tối đa 5 file chạy song song
+  useEffect(() => {
+    const activeCount = jobs.filter((j) => j.status === 'processing').length;
+    const availableSlots = MAX_CONCURRENT_JOBS - activeCount;
+
+    if (availableSlots > 0) {
+      const queuedJobs = jobs.filter(
+        (j) => j.status === 'queued' && !runningJobIdsRef.current.has(j.id)
+      );
+
+      const toStart = queuedJobs.slice(0, availableSlots);
+
+      for (const job of toStart) {
+        runningJobIdsRef.current.add(job.id);
+        updateJobState(job.id, (prev) => ({
+          ...prev,
+          status: 'processing',
+          stepLabel: language === 'en' ? 'Initializing...' : 'Đang khởi tạo...',
+          progress: 5,
+        }));
+        void runSingleFileJob(job.originalFile, job.id, job.flow);
+      }
+    }
+  }, [jobs, language, runSingleFileJob, updateJobState]);
 
   const handleFilesSelected = useCallback(
     (incomingFiles: File[]) => {
@@ -90,10 +112,15 @@ export const App: React.FC = () => {
       });
 
       if (validFiles.length === 0) {
-        alert(language === 'en' ? 'Please select .doc, .docx or .pdf files' : 'Vui lòng chọn tệp có định dạng .doc, .docx hoặc .pdf');
+        alert(
+          language === 'en'
+            ? 'Please select .doc, .docx or .pdf files'
+            : 'Vui lòng chọn tệp có định dạng .doc, .docx hoặc .pdf'
+        );
         return;
       }
 
+      // Đưa các tệp vào danh sách với trạng thái ban đầu là "queued" (đang chờ)
       const newJobs: ProcessedJob[] = validFiles.map((file, index) => {
         const isPdf = file.name.toLowerCase().endsWith('.pdf');
         return {
@@ -101,22 +128,17 @@ export const App: React.FC = () => {
           originalFile: file,
           baseName: getBaseName(file.name),
           flow: isPdf ? 'B' : 'A',
-          status: 'processing',
-          stepLabel: language === 'en' ? 'Initializing...' : 'Đang khởi tạo...',
-          progress: 5,
+          status: 'queued',
+          stepLabel: language === 'en' ? 'Queued...' : 'Đang chờ...',
+          progress: 0,
           headings: [],
           outputs: [],
         };
       });
 
       setJobs((prev) => [...newJobs, ...prev]);
-
-      // Tự động chạy từng file ngay lập tức
-      newJobs.forEach((job) => {
-        void runSingleFileJob(job.originalFile, job.id, job.flow);
-      });
     },
-    [language, runSingleFileJob]
+    [language]
   );
 
   const handleRunSampleWord = async () => {
@@ -177,10 +199,19 @@ export const App: React.FC = () => {
   };
 
   const handleRemoveJob = (jobId: string) => {
+    runningJobIdsRef.current.delete(jobId);
     setJobs((prev) => prev.filter((j) => j.id !== jobId));
     wordParagraphsCache.current.delete(jobId);
     pdfContentBytesCache.current.delete(jobId);
   };
+
+  const handleOpenTocEditor = useCallback((j: ProcessedJob) => {
+    setEditingJob(j);
+  }, []);
+
+  const handlePreviewPdf = useCallback((title: string, url: string) => {
+    setPreviewPdf({ title, url });
+  }, []);
 
   const handleDownloadAllZip = async () => {
     const completedJobs = jobs.filter((j) => j.status === 'done' && j.outputs.length > 0);
@@ -210,7 +241,7 @@ export const App: React.FC = () => {
     }
   };
 
-  const isAnyBusy = jobs.some((j) => j.status === 'processing');
+  const isAnyBusy = jobs.some((j) => j.status === 'processing' || j.status === 'queued');
   const completedCount = jobs.filter((j) => j.status === 'done').length;
 
   return (
@@ -252,7 +283,10 @@ export const App: React.FC = () => {
 
               <button
                 type="button"
-                onClick={() => setJobs([])}
+                onClick={() => {
+                  runningJobIdsRef.current.clear();
+                  setJobs([]);
+                }}
                 className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-600 transition hover:bg-slate-100"
               >
                 <Trash2 className="h-3.5 w-3.5" />
@@ -269,8 +303,8 @@ export const App: React.FC = () => {
               <JobCard
                 key={job.id}
                 job={job}
-                onOpenTocEditor={(j) => setEditingJob(j)}
-                onPreviewPdf={(title, url) => setPreviewPdf({ title, url })}
+                onOpenTocEditor={handleOpenTocEditor}
+                onPreviewPdf={handlePreviewPdf}
                 onRemoveJob={handleRemoveJob}
               />
             ))}

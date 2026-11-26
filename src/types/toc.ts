@@ -29,7 +29,7 @@ export interface ProcessedJob {
   originalFile: File;
   baseName: string;
   flow: 'A' | 'B';
-  status: 'processing' | 'done' | 'error';
+  status: 'queued' | 'processing' | 'done' | 'error';
   stepLabel: string;
   progress: number;
   headings: HeadingItem[];

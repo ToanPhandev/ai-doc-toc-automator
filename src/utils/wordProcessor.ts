@@ -133,6 +133,7 @@ export async function processWordDocument(
   }
 
   onProgress?.('Đang phân tích đề mục & ghép dòng tiêu đề (VI/EN)...', 40);
+  await new Promise((resolve) => setTimeout(resolve, 0));
 
   const docXmlStr = await zip.file('word/document.xml')!.async('string');
   const parser = new DOMParser();

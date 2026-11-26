@@ -21,6 +21,7 @@ export interface Translations {
   jobCard: {
     wordBadge: string;
     pdfBadge: string;
+    statusQueued: string;
     statusProcessing: string;
     statusDone: string;
     statusError: string;
@@ -67,7 +68,7 @@ export const translations: Record<Language, Translations> = {
   vi: {
     header: {
       title: 'AutoTOC & PageNumber',
-      subtitle: 'Tự động tạo Mục lục chấm bi, bảo toàn định dạng & đổi tên thông minh',
+      subtitle: 'Tự động tạo Mục lục, bảo toàn định dạng & đổi tên thông minh',
       badgeViEn: 'VI / EN',
       wordBadge: 'Word (.docx)',
       pdfBadge: 'PDF',
@@ -85,6 +86,7 @@ export const translations: Record<Language, Translations> = {
     jobCard: {
       wordBadge: 'Word',
       pdfBadge: 'PDF',
+      statusQueued: 'Đang chờ...',
       statusProcessing: 'Đang xử lý...',
       statusDone: 'Hoàn tất',
       statusError: 'Lỗi xử lý',
@@ -147,6 +149,7 @@ export const translations: Record<Language, Translations> = {
     jobCard: {
       wordBadge: 'Word',
       pdfBadge: 'PDF',
+      statusQueued: 'Queued...',
       statusProcessing: 'Processing...',
       statusDone: 'Completed',
       statusError: 'Processing Error',

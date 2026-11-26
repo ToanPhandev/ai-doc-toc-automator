@@ -221,6 +221,9 @@ export async function processPdfDocument(
   const pagesTextForLlm: { pageNumber: number; text: string }[] = [];
 
   for (let p = 1; p <= numPages; p++) {
+    if (p % 4 === 0) {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
     const page = await pdf.getPage(p);
     const viewport = page.getViewport({ scale: 1.0 });
     const textContent = await page.getTextContent();

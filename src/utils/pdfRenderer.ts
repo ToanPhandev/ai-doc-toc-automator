@@ -263,8 +263,13 @@ export async function renderWordPrintPdfAndSyncToc(
   let yCursor = A4_HEIGHT - MARGIN_TOP - 14;
 
   const paragraphToPageMap = new Map<number, number>();
+  let paraIndex = 0;
 
   for (const para of paragraphs) {
+    paraIndex++;
+    if (paraIndex % 6 === 0) {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
     if (para.pageBreakBefore && yCursor < A4_HEIGHT - MARGIN_TOP - 20) {
       currentPage = bodyDoc.addPage([A4_WIDTH, A4_HEIGHT]);
       currentBodyPageNumber++;
@@ -356,6 +361,7 @@ export async function renderWordPrintPdfAndSyncToc(
     });
   });
 
+  await new Promise((resolve) => setTimeout(resolve, 0));
   const pdfBytes = await finalPdf.save();
   return {
     pdfBytes,
