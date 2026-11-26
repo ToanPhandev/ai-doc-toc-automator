@@ -265,7 +265,7 @@ export async function processWordDocument(
 
   // THỬ NGHIỆM 1: Nhận diện Mục Lục thông minh bằng Gemini LLM API nếu đã cấu hình Key
   if (hasGeminiApiKey()) {
-    onProgress?.('Đang gửi dữ liệu tinh gọn sang Gemini AI siêu tốc (1-3s)...', 40);
+    onProgress?.('Đang phân tích cấu trúc đề mục tự động...', 40);
     try {
       const candidateParas = candidateBlocks.map((b) => ({
         index: b.paragraphIndex,

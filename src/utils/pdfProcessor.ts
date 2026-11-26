@@ -323,7 +323,7 @@ export async function processPdfDocument(
   // THỬ NGHIỆM 1: Nhận diện Mục Lục thông minh bằng Gemini LLM API nếu đã cấu hình Key
   if (isScannedPdf) {
     if (hasGeminiApiKey()) {
-      onProgress?.('Phát hiện PDF scan dạng ảnh: Đang sử dụng Gemini Vision AI đọc OCR trực tiếp...', 35);
+      onProgress?.('Phát hiện PDF scan dạng ảnh: Đang nhận diện nội dung văn bản...', 35);
       try {
         const scanResult = await extractTocFromScannedPdfWithGemini(originalBuffer, file.name);
         if (scanResult && (scanResult.toc_items?.length > 0 || isValidDocumentTitle(scanResult.document_title))) {
@@ -349,7 +349,7 @@ export async function processPdfDocument(
       }
     }
   } else if (hasGeminiApiKey()) {
-    onProgress?.('Đang gửi dữ liệu tinh gọn sang Gemini AI siêu tốc (1-3s)...', 35);
+    onProgress?.('Đang phân tích cấu trúc đề mục tự động...', 35);
     try {
       const llmResult = await extractTocFromPdfWithGemini(pagesTextForLlm, file.name);
       if (llmResult && llmResult.toc_items && llmResult.toc_items.length > 0) {
