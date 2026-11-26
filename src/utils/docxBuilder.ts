@@ -386,94 +386,92 @@ export async function injectTocAndFooterIntoDocx(
     }
   }
 
-  // 3. Thiết lập Footer chính giữa chân trang (Footer - Center) và đánh số bắt đầu từ 1
-  const footerFileName = 'footer_autotoc.xml';
-  const footerRelId = 'rIdAutoTocFooter99';
-  zip.file(`word/${footerFileName}`, buildCenterPageNumberFooterXml());
-
-  // Cập nhật word/_rels/document.xml.rels
-  const relsPath = 'word/_rels/document.xml.rels';
-  const relsFile = zip.file(relsPath);
-  if (relsFile) {
-    const relsStr = await relsFile.async('string');
-    const relsDoc = parser.parseFromString(relsStr, 'application/xml');
-    const relsRoot = relsDoc.documentElement;
-    const relNs = 'http://schemas.openxmlformats.org/package/2006/relationships';
-
-    const newRel = relsDoc.createElementNS(relNs, 'Relationship');
-    newRel.setAttribute('Id', footerRelId);
-    newRel.setAttribute(
-      'Type',
-      'http://schemas.openxmlformats.org/officeDocument/2006/relationships/footer'
-    );
-    newRel.setAttribute('Target', footerFileName);
-    relsRoot.appendChild(newRel);
-
-    zip.file(relsPath, serializer.serializeToString(relsDoc));
-  }
-
-  // Cập nhật [Content_Types].xml
-  const contentTypesPath = '[Content_Types].xml';
-  const ctFile = zip.file(contentTypesPath);
-  if (ctFile) {
-    const ctStr = await ctFile.async('string');
-    const ctDoc = parser.parseFromString(ctStr, 'application/xml');
-    const ctRoot = ctDoc.documentElement;
-    const ctNs = 'http://schemas.openxmlformats.org/package/2006/content-types';
-
-    const hasOverride = Array.from(ctRoot.getElementsByTagName('Override')).some(
-      (el) => el.getAttribute('PartName') === `/word/${footerFileName}`
-    );
-    if (!hasOverride) {
-      const overrideEl = ctDoc.createElementNS(ctNs, 'Override');
-      overrideEl.setAttribute('PartName', `/word/${footerFileName}`);
-      overrideEl.setAttribute(
-        'ContentType',
-        'application/vnd.openxmlformats-officedocument.wordprocessingml.footer+xml'
-      );
-      ctRoot.appendChild(overrideEl);
-      zip.file(contentTypesPath, serializer.serializeToString(ctDoc));
-    }
-  }
-
-  // Gắn w:footerReference và w:pgNumType (w:start="1") vào mọi thẻ w:sectPr trong tài liệu
+  // 2. Kiểm tra xem tài liệu gốc đã có Footer hay chưa.
+  // Nếu đã có Footer gốc -> GIỮ NGUYÊN 100%, tuyệt đối không xóa hay ghi đè!
   const sectPrList = Array.from(body.getElementsByTagNameNS(wNs, 'sectPr'));
-  if (sectPrList.length === 0) {
-    const newSectPr = xmlDoc.createElementNS(wNs, 'w:sectPr');
-    body.appendChild(newSectPr);
-    sectPrList.push(newSectPr);
-  }
+  const hasExistingFooter = sectPrList.some(
+    (sectPr) => sectPr.getElementsByTagNameNS(wNs, 'footerReference').length > 0
+  );
 
-  sectPrList.forEach((sectPr, idx) => {
-    // Xóa các footerReference type="default" cũ để tránh xung đột
-    const oldFooterRefs = Array.from(sectPr.getElementsByTagNameNS(wNs, 'footerReference'));
-    oldFooterRefs.forEach((ref) => {
-      const t = ref.getAttribute('w:type');
-      if (!t || t === 'default') {
-        ref.parentNode?.removeChild(ref);
+  if (!hasExistingFooter) {
+    const footerFileName = 'footer_autotoc.xml';
+    const footerRelId = 'rIdAutoTocFooter99';
+    zip.file(`word/${footerFileName}`, buildCenterPageNumberFooterXml());
+
+    // Cập nhật word/_rels/document.xml.rels
+    const relsPath = 'word/_rels/document.xml.rels';
+    const relsFile = zip.file(relsPath);
+    if (relsFile) {
+      const relsStr = await relsFile.async('string');
+      const relsDoc = parser.parseFromString(relsStr, 'application/xml');
+      const relsRoot = relsDoc.documentElement;
+      const relNs = 'http://schemas.openxmlformats.org/package/2006/relationships';
+
+      const newRel = relsDoc.createElementNS(relNs, 'Relationship');
+      newRel.setAttribute('Id', footerRelId);
+      newRel.setAttribute(
+        'Type',
+        'http://schemas.openxmlformats.org/officeDocument/2006/relationships/footer'
+      );
+      newRel.setAttribute('Target', footerFileName);
+      relsRoot.appendChild(newRel);
+
+      zip.file(relsPath, serializer.serializeToString(relsDoc));
+    }
+
+    // Cập nhật [Content_Types].xml
+    const contentTypesPath = '[Content_Types].xml';
+    const ctFile = zip.file(contentTypesPath);
+    if (ctFile) {
+      const ctStr = await ctFile.async('string');
+      const ctDoc = parser.parseFromString(ctStr, 'application/xml');
+      const ctRoot = ctDoc.documentElement;
+      const ctNs = 'http://schemas.openxmlformats.org/package/2006/content-types';
+
+      const hasOverride = Array.from(ctRoot.getElementsByTagName('Override')).some(
+        (el) => el.getAttribute('PartName') === `/word/${footerFileName}`
+      );
+      if (!hasOverride) {
+        const overrideEl = ctDoc.createElementNS(ctNs, 'Override');
+        overrideEl.setAttribute('PartName', `/word/${footerFileName}`);
+        overrideEl.setAttribute(
+          'ContentType',
+          'application/vnd.openxmlformats-officedocument.wordprocessingml.footer+xml'
+        );
+        ctRoot.appendChild(overrideEl);
+        zip.file(contentTypesPath, serializer.serializeToString(ctDoc));
+      }
+    }
+
+    // Gắn w:footerReference và w:pgNumType (w:start="1") vào mọi thẻ w:sectPr trong tài liệu
+    if (sectPrList.length === 0) {
+      const newSectPr = xmlDoc.createElementNS(wNs, 'w:sectPr');
+      body.appendChild(newSectPr);
+      sectPrList.push(newSectPr);
+    }
+
+    sectPrList.forEach((sectPr, idx) => {
+      const footerRef = xmlDoc.createElementNS(wNs, 'w:footerReference');
+      footerRef.setAttribute('w:type', 'default');
+      footerRef.setAttributeNS(rNs, 'r:id', footerRelId);
+      sectPr.insertBefore(footerRef, sectPr.firstChild);
+
+      // Đảm bảo trang đầu cũng hiển thị số trang (tắt titlePg nếu có)
+      const titlePg = sectPr.getElementsByTagNameNS(wNs, 'titlePg')[0];
+      if (titlePg) {
+        titlePg.parentNode?.removeChild(titlePg);
+      }
+
+      if (idx === 0) {
+        let pgNumType = sectPr.getElementsByTagNameNS(wNs, 'pgNumType')[0];
+        if (!pgNumType) {
+          pgNumType = xmlDoc.createElementNS(wNs, 'w:pgNumType');
+          sectPr.appendChild(pgNumType);
+        }
+        pgNumType.setAttribute('w:start', '1');
       }
     });
-
-    const footerRef = xmlDoc.createElementNS(wNs, 'w:footerReference');
-    footerRef.setAttribute('w:type', 'default');
-    footerRef.setAttributeNS(rNs, 'r:id', footerRelId);
-    sectPr.insertBefore(footerRef, sectPr.firstChild);
-
-    // Đảm bảo trang đầu cũng hiển thị số trang (tắt titlePg nếu có)
-    const titlePg = sectPr.getElementsByTagNameNS(wNs, 'titlePg')[0];
-    if (titlePg) {
-      titlePg.parentNode?.removeChild(titlePg);
-    }
-
-    if (idx === 0) {
-      let pgNumType = sectPr.getElementsByTagNameNS(wNs, 'pgNumType')[0];
-      if (!pgNumType) {
-        pgNumType = xmlDoc.createElementNS(wNs, 'w:pgNumType');
-        sectPr.appendChild(pgNumType);
-      }
-      pgNumType.setAttribute('w:start', '1');
-    }
-  });
+  }
 
   // Bật cờ tự động cập nhật trường dữ liệu (w:updateFields) trong word/settings.xml khi mở bằng MS Word
   const settingsPath = 'word/settings.xml';

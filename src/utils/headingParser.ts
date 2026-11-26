@@ -6,8 +6,8 @@ import { CandidateBlock, HeadingItem } from '../types/toc';
  * - Tiếng Anh:  ^(INTRODUCTION|PREFACE|PART\s+[IVXLCDM\d]+|CHAPTER\s+[IVXLCDM\d]+|CONCLUSION)\b.*
  */
 const LEVEL_1_PATTERNS: RegExp[] = [
-  /^(LỜI\s+NÓI\s+ĐẦU|QUYẾT\s+ĐỊNH|PHẦN\s+[IVXLCDM\d]+|CHƯƠNG\s+[IVXLCDM\d]+)(?:$|[\s:.\-–—]).*/iu,
-  /^(INTRODUCTION|PREFACE|PART\s+[IVXLCDM\d]+|CHAPTER\s+[IVXLCDM\d]+|CONCLUSION)(?:$|[\s:.\-–—]).*/iu,
+  /^(LỜI\s+NÓI\s+ĐẦU|QUYẾT\s+ĐỊNH|PHẦN\s+[IVXLCDM\d]+|CHƯƠNG\s+[IVXLCDM\d]+|PHỤ\s+LỤC(?:\s+[IVXLCDM\d]+)?)(?:$|[\s:.\-–—]).*/iu,
+  /^(INTRODUCTION|PREFACE|PART\s+[IVXLCDM\d]+|CHAPTER\s+[IVXLCDM\d]+|APPENDIX(?:\s+[A-ZIVXLCDM\d]+)?|CONCLUSION)(?:$|[\s:.\-–—]).*/iu,
 ];
 
 /**
@@ -22,10 +22,14 @@ const LEVEL_2_PATTERNS: RegExp[] = [
 
 /**
  * Mẫu nhận diện dòng chỉ mới chứa tiền tố & số hiệu (cần ghép với dòng tiêu đề kế tiếp):
- * Ví dụ: "CHƯƠNG I", "PHẦN II.", "MỤC 1", "ĐIỀU 2:", "CHAPTER 1"
+ * Ví dụ: "CHƯƠNG I", "PHẦN II.", "PHỤ LỤC I", "MỤC 1", "ĐIỀU 2:", "CHAPTER 1"
  */
-const LEVEL_1_PREFIX_ONLY = /^(?:PHẦN|CHƯƠNG|PART|CHAPTER)\s+[IVXLCDM\d]+\s*[:.\-–—]?\s*$/iu;
+const LEVEL_1_PREFIX_ONLY =
+  /^(?:(?:PHẦN|CHƯƠNG|PART|CHAPTER)\s+[IVXLCDM\d]+|(?:PHỤ\s+LỤC|APPENDIX)(?:\s+[IVXLCDM\dA-Z]+)?)\s*[:.\-–—]?\s*$/iu;
 const LEVEL_2_PREFIX_ONLY = /^(?:MỤC|ĐIỀU|SECTION|ARTICLE)\s+[IVXLCDM\d]+\s*[:.\-–—]?\s*$/iu;
+
+const CONSOLIDATED_PREAMBLE_RE =
+  /(?:có\s+hiệu\s+lực\s+(?:thi\s+hành\s+)?kể\s+từ\s+ngày|được\s+sửa\s+đổi,\s*bổ\s+sung\s+bởi|số\s+\d+\/\d+\/[A-ZĐ0-9-]+.*ngày\s+\d+)/iu;
 
 /**
  * Các mẫu nhận diện chuỗi số trang ở vùng Header/Footer (9% đỉnh/đáy trang PDF)
@@ -39,14 +43,39 @@ const PAGE_NUMBER_PATTERNS: RegExp[] = [
 export function cleanHeadingText(raw: string): string {
   if (!raw) return '';
   return raw
+    .replace(/\bHYPERLINK\s+\\l\s+"[^"]*"\s*/gi, '')
     .replace(/[\r\n\t]+/g, ' ')
     .replace(/\s{2,}/g, ' ')
     .trim();
 }
 
+/**
+ * Loại bỏ các câu dẫn giải dài ở văn bản hợp nhất (VD: "Điều 10 và Điều 11 của Luật số ... quy định như sau:")
+ * để không bị nhận nhầm thành đề mục Điều trong Mục lục.
+ */
+export function isNarrativeCitationLine(text: string): boolean {
+  const cleaned = cleanHeadingText(text);
+  if (!cleaned) return false;
+  if (
+    /^(?:ĐIỀU|MỤC|CHƯƠNG|PHẦN)\s+[IVXLCDM\d]+(?:\s*(?:,|và)\s*(?:ĐIỀU|MỤC|CHƯƠNG|PHẦN)?\s*[IVXLCDM\d]+)*\s+của\s+(?:Luật|Bộ\s+luật|Nghị\s+định|Thông\s+tư|Pháp\s+lệnh|Nghị\s+quyết|Quyết\s+định)\b/iu.test(
+      cleaned
+    )
+  ) {
+    return true;
+  }
+  if (/quy\s+định\s+như\s+sau\s*[:.]?\s*$/iu.test(cleaned)) {
+    return true;
+  }
+  if (/có\s+hiệu\s+lực\s+(?:thi\s+hành\s+)?kể\s+từ\s+ngày/iu.test(cleaned)) {
+    return true;
+  }
+  return false;
+}
+
 export function matchRegexLevel(text: string): 1 | 2 | null {
   const cleaned = cleanHeadingText(text);
   if (!cleaned) return null;
+  if (isNarrativeCitationLine(cleaned)) return null;
 
   for (const pat of LEVEL_1_PATTERNS) {
     if (pat.test(cleaned)) return 1;
@@ -230,8 +259,11 @@ export function isValidDocumentTitle(title?: string | null): boolean {
     return false;
   }
 
-  // Bác bỏ nếu là Quốc hiệu, Tiêu ngữ
+  // Bác bỏ nếu là Quốc hiệu, Tiêu ngữ hoặc câu dẫn nhập văn bản hợp nhất
   if (/cộng\s*hòa\s*xã\s*hội|độc\s*lập\s*-\s*tự\s*do/iu.test(clean)) {
+    return false;
+  }
+  if (CONSOLIDATED_PREAMBLE_RE.test(clean)) {
     return false;
   }
 
@@ -275,7 +307,8 @@ export function extractOfficialDocumentTitle(
   // Mẫu dừng quét khi đã chạm đến phần căn cứ hoặc đề mục nội dung
   const stopAfterTitle = /^(?:căn\s*cứ|điều\s+\d+|chương\s+[ivxlcdm\d]+|phần\s+thứ)/iu;
   // Mẫu bỏ qua các dòng mở đầu hành chính (Quốc hiệu, tiêu ngữ, nơi gửi, số hiệu)
-  const skipBeforeTitle = /^(?:cộng\s*hòa\s*xã\s*hội|độc\s*lập\s*-\s*tự\s*do|số\s*:|hà\s*nội,\s*ngày|ngày\s+\d+|chính\s*phủ|quốc\s*hội)/iu;
+  const skipBeforeTitle =
+    /^(?:cộng\s*hòa\s*xã\s*hội|độc\s*lập\s*-\s*tự\s*do|số\s*:|hà\s*nội,\s*ngày|ngày\s+\d+|chính\s*phủ|quốc\s*hội|văn\s*phòng\s*quốc\s*hội|văn\s*phòng\s*chính\s*phủ)/iu;
 
   // VÒNG 1: QUÉT TRỰC TIẾP TÌM DÒNG CÓ CHỮ QUEN THUỘC (LUẬT, BỘ LUẬT, NGHỊ ĐỊNH, THÔNG TƯ...)
   for (let i = 0; i < scanLimit; i++) {
@@ -300,6 +333,17 @@ export function extractOfficialDocumentTitle(
             if (!nextLine) continue;
             if (stopAfterTitle.test(nextLine)) break;
             if (skipBeforeTitle.test(nextLine)) break;
+            if (CONSOLIDATED_PREAMBLE_RE.test(nextLine) || nextLine.length > 130) break;
+
+            const prevPart = collectedParts[collectedParts.length - 1];
+            const prevIsUpper = prevPart === prevPart.toUpperCase() && /\p{L}/u.test(prevPart);
+            const nextIsUpper = nextLine === nextLine.toUpperCase() && /\p{L}/u.test(nextLine);
+            if (
+              collectedParts.length >= 2 &&
+              (/[;:.]\s*$/.test(nextLine) || (prevIsUpper && !nextIsUpper))
+            ) {
+              break;
+            }
 
             collectedParts.push(nextLine);
 

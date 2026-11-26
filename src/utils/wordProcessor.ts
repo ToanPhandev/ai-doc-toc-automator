@@ -8,11 +8,13 @@ import {
 } from 'docx';
 import JSZip from 'jszip';
 import { CandidateBlock, HeadingItem, OutputFileItem } from '../types/toc';
+import { isOle2BinaryDoc, parseBinaryDocToParagraphItems } from './binaryDocParser';
 import { buildStandaloneTocDocx, injectTocAndFooterIntoDocx } from './docxBuilder';
 import {
   cleanHeadingText,
   ensureDocumentTypePrefix,
   extractOfficialDocumentTitle,
+  formatDisplayTitle,
   formatSmartBaseName,
   getBaseName,
   isValidDocumentTitle,
@@ -110,7 +112,7 @@ function parseWordHtmlToParagraphItems(html: string): ParsedDocParagraphItem[] {
 
       if (rawText.length > 0) {
         const isHeadingCandidate =
-          /^(LỜI\s+NÓI\s+ĐẦU|QUYẾT\s+ĐỊNH|PHẦN|CHƯƠNG|MỤC|ĐIỀU|INTRODUCTION|PREFACE|PART|CHAPTER|SECTION|ARTICLE|CONCLUSION)\b/iu.test(
+          /^(LỜI\s+NÓI\s+ĐẦU|QUYẾT\s+ĐỊNH|PHẦN|CHƯƠNG|PHỤ\s+LỤC|MỤC|ĐIỀU|INTRODUCTION|PREFACE|PART|CHAPTER|APPENDIX|SECTION|ARTICLE|CONCLUSION)\b/iu.test(
             rawText
           ) ||
           (rawText === rawText.toUpperCase() && /\p{L}/u.test(rawText) && rawText.length < 120);
@@ -129,16 +131,21 @@ function parseWordHtmlToParagraphItems(html: string): ParsedDocParagraphItem[] {
   return paragraphs;
 }
 
-/**
- * Trích xuất văn bản từ tệp .doc cũ (Word 97-2003 / RTF / HTML-doc) và chuyển đổi
- * thành cấu trúc .docx chuẩn để xử lý đồng nhất.
- */
-async function convertLegacyDocBufferToDocxZip(buffer: ArrayBuffer): Promise<JSZip> {
+function escapeHtml(unsafe: string): string {
+  return unsafe
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function extractWordHtmlSource(buffer: ArrayBuffer): string | null {
+  if (isOle2BinaryDoc(buffer)) return null;
   const bytes = new Uint8Array(buffer);
   const utf8Text = new TextDecoder('utf-8', { fatal: false }).decode(bytes);
   const utf16Text = new TextDecoder('utf-16le', { fatal: false }).decode(bytes);
 
-  // Chọn bảng mã có nhiều ký tự tiếng Việt / chữ cái hợp lệ hơn
   const countReadable = (s: string) => (s.match(/[\p{L}\d\s.,:;!?()-]/gu) || []).length;
   const rawSource = countReadable(utf16Text) > countReadable(utf8Text) ? utf16Text : utf8Text;
 
@@ -148,35 +155,124 @@ async function convertLegacyDocBufferToDocxZip(buffer: ArrayBuffer): Promise<JSZ
     /<!DOCTYPE\s+html/i.test(rawSource) ||
     /<body\b/i.test(rawSource);
 
+  return isHtml ? rawSource : null;
+}
+
+/**
+ * Chèn trực tiếp khối Trang Mục lục + Page Break vào ngay đầu <body> của file Word HTML gốc,
+ * giữ nguyên 100% mã HTML, CSS, bảng biểu, chữ nghiêng và chữ ký ban đầu.
+ */
+export function injectTocIntoWordHtmlDoc(
+  rawHtml: string,
+  baseName: string,
+  headings: HeadingItem[]
+): Blob {
+  const displayTitle = escapeHtml(formatDisplayTitle(baseName));
+
+  const rowsHtml =
+    headings.length === 0
+      ? `<tr><td colspan="2" style="text-align:center;font-family:'Times New Roman',serif;font-size:13pt;font-style:italic;padding:6pt 0;">(Không tìm thấy đề mục tự động trong tài liệu)</td></tr>`
+      : headings
+          .map((h) => {
+            const isL1 = h.level === 1;
+            const fontSize = isL1 ? '13.5pt' : '13pt';
+            const fontWeight = isL1 ? 'bold' : 'normal';
+            const padLeft = isL1 ? '0pt' : '18pt';
+            const padTop = isL1 ? '5pt' : '3pt';
+            return `<tr>
+  <td style="font-family:'Times New Roman',serif;font-size:${fontSize};font-weight:${fontWeight};padding:${padTop} 8pt 2pt ${padLeft};border-bottom:1pt dotted #666666;vertical-align:bottom;">${escapeHtml(h.title)}</td>
+  <td style="font-family:'Times New Roman',serif;font-size:${fontSize};font-weight:${fontWeight};padding:${padTop} 0pt 2pt 6pt;border-bottom:1pt dotted #666666;text-align:right;white-space:nowrap;vertical-align:bottom;">${h.pageNumber}</td>
+</tr>`;
+          })
+          .join('\n');
+
+  const tocBlock = `
+<div class="autotoc-injected-section" style="font-family:'Times New Roman',serif;">
+  <p align="center" style="text-align:center;margin:0 0 4pt 0;font-family:'Times New Roman',serif;font-size:14pt;font-weight:bold;">${displayTitle}</p>
+  <p align="center" style="text-align:center;margin:0 0 14pt 0;font-family:'Times New Roman',serif;font-size:14pt;font-weight:bold;">MỤC LỤC</p>
+  <table border="0" cellspacing="0" cellpadding="0" width="100%" style="width:100%;border-collapse:collapse;margin-bottom:12pt;">
+    ${rowsHtml}
+  </table>
+  <br clear="all" style="page-break-before:always" />
+</div>
+`;
+
+  const bodyOpenMatch = /<body\b[^>]*>/i.exec(rawHtml);
+  const updatedHtml = bodyOpenMatch
+    ? rawHtml.slice(0, bodyOpenMatch.index + bodyOpenMatch[0].length) +
+      tocBlock +
+      rawHtml.slice(bodyOpenMatch.index + bodyOpenMatch[0].length)
+    : tocBlock + rawHtml;
+
+  return new Blob([updatedHtml], { type: 'application/msword;charset=utf-8' });
+}
+
+/**
+ * Trích xuất văn bản từ tệp .doc cũ (Word 97-2003 / RTF / HTML-doc) và chuyển đổi
+ * thành cấu trúc .docx chuẩn để xử lý đồng nhất.
+ */
+async function convertLegacyDocBufferToDocxZip(buffer: ArrayBuffer): Promise<JSZip> {
   let parsedItems: ParsedDocParagraphItem[] = [];
-  if (isHtml) {
-    parsedItems = parseWordHtmlToParagraphItems(rawSource);
+
+  // 1. Ưu tiên giải mã chuẩn OLE2 Binary Word 97-2003 (FIB + Piece Table)
+  if (isOle2BinaryDoc(buffer)) {
+    parsedItems = parseBinaryDocToParagraphItems(buffer);
   }
 
-  // Nếu không phải HTML hoặc parse HTML không ra dòng nào -> Fallback sang phân tích nhị phân thuần
+  // 2. Nếu không phải OLE2 (hoặc OLE2 chưa trích được), kiểm tra định dạng Word HTML
   if (parsedItems.length === 0) {
-    const lines = rawSource
-      .replace(/\r\n/g, '\n')
-      .replace(/\r/g, '\n')
-      .split('\n')
-      .map((l) => l.replace(/[^\p{L}\p{N}\p{P}\p{Zs}]/gu, '').trim())
-      .filter((l) => l.length >= 2 && /[\p{L}\d]/u.test(l));
+    const bytes = new Uint8Array(buffer);
+    const utf8Text = new TextDecoder('utf-8', { fatal: false }).decode(bytes);
+    const utf16Text = new TextDecoder('utf-16le', { fatal: false }).decode(bytes);
 
-    parsedItems = lines.map((line) => {
-      const isHeadingCandidate =
-        /^(LỜI\s+NÓI\s+ĐẦU|QUYẾT\s+ĐỊNH|PHẦN|CHƯƠNG|MỤC|ĐIỀU|INTRODUCTION|PREFACE|PART|CHAPTER|SECTION|ARTICLE|CONCLUSION)\b/iu.test(
-          line
-        ) ||
-        (line === line.toUpperCase() && /\p{L}/u.test(line) && line.length < 120);
+    // Chọn bảng mã có nhiều ký tự tiếng Việt / chữ cái hợp lệ hơn
+    const countReadable = (s: string) => (s.match(/[\p{L}\d\s.,:;!?()-]/gu) || []).length;
+    const rawSource = countReadable(utf16Text) > countReadable(utf8Text) ? utf16Text : utf8Text;
 
-      return {
-        text: line,
-        isBold: isHeadingCandidate,
-        isCentered: false,
-        isRight: false,
-        isHeadingCandidate,
-      };
-    });
+    const isHtml =
+      /<html\b/i.test(rawSource) ||
+      /<w:WordDocument\b/i.test(rawSource) ||
+      /<!DOCTYPE\s+html/i.test(rawSource) ||
+      /<body\b/i.test(rawSource);
+
+    if (isHtml) {
+      parsedItems = parseWordHtmlToParagraphItems(rawSource);
+    }
+
+    // 3. Fallback cuối cùng: Lọc an toàn để không bao giờ in ra trang rác nhị phân
+    if (parsedItems.length === 0) {
+      const lines = rawSource
+        .replace(/\r\n/g, '\n')
+        .replace(/\r/g, '\n')
+        .split('\n')
+        .map((l) =>
+          l
+            .replace(/\bHYPERLINK\s+\\l\s+"[^"]*"\s*/gi, '')
+            .replace(/[^\p{L}\p{N}\p{P}\p{Zs}]/gu, '')
+            .trim()
+        )
+        .filter((l) => {
+          if (l.length < 2 || !/[\p{L}\d]/u.test(l)) return false;
+          const validLatin = (l.match(/[\x20-\x7e\u00c0-\u024f\u1e00-\u1eff]/g) || []).length;
+          return validLatin / l.length >= 0.75;
+        });
+
+      parsedItems = lines.map((line) => {
+        const isHeadingCandidate =
+          /^(LỜI\s+NÓI\s+ĐẦU|QUYẾT\s+ĐỊNH|PHẦN|CHƯƠNG|PHỤ\s+LỤC|MỤC|ĐIỀU|INTRODUCTION|PREFACE|PART|CHAPTER|APPENDIX|SECTION|ARTICLE|CONCLUSION)\b/iu.test(
+            line
+          ) ||
+          (line === line.toUpperCase() && /\p{L}/u.test(line) && line.length < 120);
+
+        return {
+          text: line,
+          isBold: isHeadingCandidate,
+          isCentered: false,
+          isRight: false,
+          isHeadingCandidate,
+        };
+      });
+    }
   }
 
   const children = parsedItems.map((item) => {
@@ -241,6 +337,7 @@ export async function processWordDocument(
 
   const arrayBuffer = await file.arrayBuffer();
   let zip: JSZip;
+  let originalHtmlSource: string | null = null;
 
   try {
     zip = await JSZip.loadAsync(arrayBuffer);
@@ -249,6 +346,7 @@ export async function processWordDocument(
     }
   } catch {
     onProgress?.('Đang chuyển đổi định dạng .doc cũ sang .docx...', 25);
+    originalHtmlSource = extractWordHtmlSource(arrayBuffer);
     zip = await convertLegacyDocBufferToDocxZip(arrayBuffer);
   }
 
@@ -464,7 +562,10 @@ export async function processWordDocument(
 
   onProgress?.('Đang đóng gói tệp Word (bảo toàn định dạng gốc) & Mục lục rời...', 90);
 
-  const modifiedDocxBlob = await injectTocAndFooterIntoDocx(zip, smartBaseName, syncedHeadings);
+  const modifiedWordBlob = originalHtmlSource
+    ? injectTocIntoWordHtmlDoc(originalHtmlSource, smartBaseName, syncedHeadings)
+    : await injectTocAndFooterIntoDocx(zip, smartBaseName, syncedHeadings);
+  const primaryWordExt = originalHtmlSource ? 'doc' : 'docx';
   const standaloneDocxBlob = await buildStandaloneTocDocx(smartBaseName, syncedHeadings);
   const printPdfBlob = new Blob([pdfBytes as unknown as BlobPart], {
     type: 'application/pdf',
@@ -472,9 +573,9 @@ export async function processWordDocument(
 
   const outputs: OutputFileItem[] = [
     {
-      name: `${smartBaseName}.docx`,
-      blob: modifiedDocxBlob,
-      url: URL.createObjectURL(modifiedDocxBlob),
+      name: `${smartBaseName}.${primaryWordExt}`,
+      blob: modifiedWordBlob,
+      url: URL.createObjectURL(modifiedWordBlob),
       kind: 'docx',
       description: 'Tệp Word gốc giữ nguyên 100% định dạng, đã chèn Mục lục ở đầu',
     },
@@ -517,10 +618,12 @@ export async function rebuildWordOutputs(
 ): Promise<OutputFileItem[]> {
   const arrayBuffer = await originalFile.arrayBuffer();
   let zip: JSZip;
+  let originalHtmlSource: string | null = null;
   try {
     zip = await JSZip.loadAsync(arrayBuffer);
     if (!zip.file('word/document.xml')) throw new Error('legacy');
   } catch {
+    originalHtmlSource = extractWordHtmlSource(arrayBuffer);
     zip = await convertLegacyDocBufferToDocxZip(arrayBuffer);
   }
 
@@ -529,7 +632,10 @@ export async function rebuildWordOutputs(
     customHeadings,
     paragraphs
   );
-  const modifiedDocxBlob = await injectTocAndFooterIntoDocx(zip, baseName, customHeadings);
+  const modifiedWordBlob = originalHtmlSource
+    ? injectTocIntoWordHtmlDoc(originalHtmlSource, baseName, customHeadings)
+    : await injectTocAndFooterIntoDocx(zip, baseName, customHeadings);
+  const primaryWordExt = originalHtmlSource ? 'doc' : 'docx';
   const standaloneDocxBlob = await buildStandaloneTocDocx(baseName, customHeadings);
   const printPdfBlob = new Blob([pdfBytes as unknown as BlobPart], {
     type: 'application/pdf',
@@ -537,9 +643,9 @@ export async function rebuildWordOutputs(
 
   return [
     {
-      name: `${baseName}.docx`,
-      blob: modifiedDocxBlob,
-      url: URL.createObjectURL(modifiedDocxBlob),
+      name: `${baseName}.${primaryWordExt}`,
+      blob: modifiedWordBlob,
+      url: URL.createObjectURL(modifiedWordBlob),
       kind: 'docx',
       description: 'Tệp Word gốc giữ nguyên 100% định dạng, đã chèn Mục lục ở đầu',
     },
