@@ -28,6 +28,12 @@ const LEVEL_1_PREFIX_ONLY =
   /^(?:(?:PHẦN|CHƯƠNG|PART|CHAPTER)\s+[IVXLCDM\d]+|(?:PHỤ\s+LỤC|APPENDIX)(?:\s+[IVXLCDM\dA-Z]+)?)\s*[:.\-–—]?\s*$/iu;
 const LEVEL_2_PREFIX_ONLY = /^(?:MỤC|ĐIỀU|SECTION|ARTICLE)\s+[IVXLCDM\d]+\s*[:.\-–—]?\s*$/iu;
 
+// Lớp 3 (Fallback riêng cho Nghị quyết / Chỉ thị / Đề án dạng La Mã + tiểu mục số in đậm khi Lớp 1 & 2 ra 0 mục)
+const ROMAN_LEVEL_1_RE =
+  /^(?:I|II|III|IV|V|VI|VII|VIII|IX|X|XI|XII|XIII|XIV|XV|XVI|XVII|XVIII|XIX|XX)\s*[.\-–—:)]\s+\S/u;
+const NUMBERED_LEVEL_2_RE = /^(?:\d+\.(?:\d+\.?){0,2})\s+\S/u;
+const SEPARATOR_LINE_RE = /^[-–—_*=\s]{3,}$/;
+
 const CONSOLIDATED_PREAMBLE_RE =
   /(?:có\s+hiệu\s+lực\s+(?:thi\s+hành\s+)?kể\s+từ\s+ngày|được\s+sửa\s+đổi,\s*bổ\s+sung\s+bởi|số\s+\d+\/\d+\/[A-ZĐ0-9-]+.*ngày\s+\d+)/iu;
 
@@ -189,6 +195,49 @@ export function parseHeadingsFromBlocks(
     }
 
     idx++;
+  }
+
+  // Lớp 3 (Zero-Regression Fallback): Chỉ kích hoạt khi Lớp 1 & 2 không tìm được đề mục nào
+  // (ví dụ Nghị quyết Đảng dạng I-, II-, III-, IV- và tiểu mục 1., 1.1. in đậm)
+  if (headings.length === 0) {
+    for (const block of blocks) {
+      const text = cleanHeadingText(block.text);
+      if (!text || SEPARATOR_LINE_RE.test(text) || isNarrativeCitationLine(text)) {
+        continue;
+      }
+
+      if (
+        text.length <= 200 &&
+        ROMAN_LEVEL_1_RE.test(text) &&
+        (block.isBold || isAllUpperCaseText(text) || block.fontSize >= medianBodyFontSize + 0.5)
+      ) {
+        headings.push({
+          id: `h-${headings.length + 1}-${block.paragraphIndex}`,
+          level: 1,
+          title: text,
+          pageNumber: block.pageNumber,
+          paragraphIndex: block.paragraphIndex,
+          mergedNextIndex: -1,
+        });
+        continue;
+      }
+
+      if (
+        block.isBold &&
+        text.length <= 320 &&
+        !/;\s*$/.test(text) &&
+        NUMBERED_LEVEL_2_RE.test(text)
+      ) {
+        headings.push({
+          id: `h-${headings.length + 1}-${block.paragraphIndex}`,
+          level: 2,
+          title: text,
+          pageNumber: block.pageNumber,
+          paragraphIndex: block.paragraphIndex,
+          mergedNextIndex: -1,
+        });
+      }
+    }
   }
 
   return headings;
@@ -419,9 +468,10 @@ export function ensureDocumentTypePrefix(
   const isDetailDecree = /^QUY\s+ĐỊNH\s+CHI\s+TIẾT\b/iu.test(upper);
 
   if (!isDetailDecree) {
-    const hasTypePrefix = /^(?:LUẬT|BỘ\s+LUẬT|NGHỊ\s+ĐỊNH|THÔNG\s+TƯ|QUYẾT\s+ĐỊNH|NGHỊ\s+QUYẾT|PHÁP\s+LỆNH|HIẾN\s+PHÁP|CHỈ\s+THỊ|QUY\s+CHẾ|BÁO\s+CÁO|KẾ\s+HOẠCH|LAW|CODE|DECREE|CIRCULAR|DECISION)\b/iu.test(
-      upper
-    );
+    const hasTypePrefix =
+      /^(?:LUẬT|BỘ\s+LUẬT|NGHỊ\s+ĐỊNH|THÔNG\s+TƯ|QUYẾT\s+ĐỊNH|NGHỊ\s+QUYẾT|PHÁP\s+LỆNH|HIẾN\s+PHÁP|CHỈ\s+THỊ|QUY\s+CHẾ|BÁO\s+CÁO|KẾ\s+HOẠCH|GIÁO\s+TRÌNH|LUẬN\s+VĂN|LUẬN\s+ÁN|ĐỀ\s+ÁN|ĐỀ\s+TÀI|HƯỚNG\s+DẪN|TÀI\s+LIỆU|QUY\s+TRÌNH|HỢP\s+ĐỒNG|BIÊN\s+BẢN|TỜ\s+TRÌNH|CÔNG\s+VĂN|PHỤ\s+LỤC|LAW|CODE|DECREE|CIRCULAR|DECISION|REPORT|MANUAL|THESIS|GUIDE|PROPOSAL|PLAN|CONTRACT|APPENDIX)\b/iu.test(
+        upper
+      );
     if (hasTypePrefix) {
       return clean;
     }

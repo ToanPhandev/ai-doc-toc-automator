@@ -389,6 +389,9 @@ export async function processWordDocument(
     const tEls = Array.from(pEl.getElementsByTagNameNS(wNs, 't'));
     const rawText = tEls.map((t) => t.textContent || '').join('');
     const cleaned = cleanHeadingText(rawText);
+    if (/^[-–—_*=\s]{3,}$/.test(cleaned)) {
+      return;
+    }
 
     // Kiểm tra style Heading 1/2/3 có sẵn
     let styleLevel: 1 | 2 | null = null;
@@ -455,6 +458,7 @@ export async function processWordDocument(
         pageNumber: estimatedPage,
         paragraphIndex: idx,
         styleLevel,
+        isCentered,
       });
     }
 
@@ -477,6 +481,7 @@ export async function processWordDocument(
   // Quét tìm Tên văn bản chính thức (LUẬT, NGHỊ ĐỊNH...) từ các khối đoạn văn đầu
   const rawLocalTitle = extractOfficialDocumentTitle(candidateBlocks);
   const localOfficialTitle = ensureDocumentTypePrefix(rawLocalTitle || '', candidateBlocks);
+  const medianFontSize = getMedian(fontSizes, 13.0);
 
   let smartBaseName = baseName;
   let initialHeadings: HeadingItem[] = [];
@@ -484,33 +489,118 @@ export async function processWordDocument(
 
   // THỬ NGHIỆM 1: Nhận diện Mục Lục thông minh bằng Gemini LLM API nếu đã cấu hình Key
   if (hasGeminiApiKey()) {
-    onProgress?.('Đang phân tích cấu trúc đề mục tự động...', 40);
+    onProgress?.('Đang phân tích cấu trúc đề mục tự động bằng AI...', 40);
     try {
       const candidateParas = candidateBlocks.map((b) => ({
         index: b.paragraphIndex,
         text: b.text,
         isBold: b.isBold,
         fontSize: b.fontSize,
+        isCentered: b.isCentered,
+        styleLevel: b.styleLevel,
       }));
-      const llmResult = await extractTocFromWordWithGemini(candidateParas, file.name);
+      const llmResult = await extractTocFromWordWithGemini(candidateParas, file.name, {
+        medianFontSize,
+        onChunkProgress: (completed, total) => {
+          const pct = Math.min(65, 40 + Math.round((completed / Math.max(1, total)) * 25));
+          onProgress?.(
+            total > 1
+              ? `Đang phân tích đề mục bằng AI (khúc ${completed}/${total})...`
+              : 'Đang phân tích cấu trúc đề mục bằng AI...',
+            pct
+          );
+        },
+      });
+
       if (llmResult && llmResult.toc_items && llmResult.toc_items.length > 0) {
-        usedLlm = true;
-        // Bắt buộc document_title phải là Tên văn bản hợp lệ, tuyệt đối không lấy Điều/Chương
-        const rawTitle = isValidDocumentTitle(llmResult.document_title)
-          ? llmResult.document_title
-          : localOfficialTitle;
-        const chosenTitle = ensureDocumentTypePrefix(rawTitle, candidateBlocks);
-        smartBaseName = formatSmartBaseName(baseName, chosenTitle);
-        initialHeadings = llmResult.toc_items.map((it, idx) => {
-          const matchBlock = candidateBlocks.find((b) => b.paragraphIndex === it.paragraph_index);
-          return {
-            id: `llm-doc-h-${idx + 1}-${it.paragraph_index}`,
-            level: it.level,
-            title: it.title,
-            pageNumber: matchBlock?.pageNumber ?? 2,
-            paragraphIndex: it.paragraph_index,
-          };
-        });
+        const candidateByIndex = new Map(candidateBlocks.map((b) => [b.paragraphIndex, b]));
+        const validLlmItems = llmResult.toc_items.filter((it) =>
+          candidateByIndex.has(it.paragraph_index)
+        );
+
+        if (validLlmItems.length > 0) {
+          const headingIndexSet = new Set(validLlmItems.map((it) => it.paragraph_index));
+          const confirmedMergedSet = new Set<number>();
+
+          initialHeadings = validLlmItems.map((it, idx) => {
+            const matchBlock = candidateByIndex.get(it.paragraph_index);
+            const validMerged = Array.from(
+              new Set(
+                (it.merged_indices ?? []).filter(
+                  (m) =>
+                    Number.isInteger(m) &&
+                    m > it.paragraph_index &&
+                    m <= it.paragraph_index + 3 &&
+                    candidateByIndex.has(m) &&
+                    !headingIndexSet.has(m)
+                )
+              )
+            ).sort((a, b) => a - b);
+
+            for (const m of validMerged) {
+              confirmedMergedSet.add(m);
+            }
+
+            return {
+              id: `llm-doc-h-${idx + 1}-${it.paragraph_index}`,
+              level: it.level,
+              title: it.title,
+              pageNumber: matchBlock?.pageNumber ?? 2,
+              paragraphIndex: it.paragraph_index,
+              mergedNextIndex: validMerged[0] ?? -1,
+              mergedIndices: validMerged,
+            };
+          });
+
+          // Partial fallback cục bộ cho các khúc bị lỗi/timeout hoặc vượt giới hạn khúc
+          if (llmResult.failed_ranges && llmResult.failed_ranges.length > 0) {
+            for (const range of llmResult.failed_ranges) {
+              const rangeBlocks = candidateBlocks.filter(
+                (b) =>
+                  b.paragraphIndex >= range.startParagraphIndex &&
+                  b.paragraphIndex <= range.endParagraphIndex
+              );
+              if (!rangeBlocks.length) continue;
+
+              const fallbackRangeHeadings = parseHeadingsFromBlocks(rangeBlocks, medianFontSize);
+              for (const fh of fallbackRangeHeadings) {
+                if (
+                  fh.paragraphIndex !== undefined &&
+                  !headingIndexSet.has(fh.paragraphIndex) &&
+                  !confirmedMergedSet.has(fh.paragraphIndex)
+                ) {
+                  headingIndexSet.add(fh.paragraphIndex);
+                  const validNext =
+                    fh.mergedNextIndex !== undefined &&
+                    fh.mergedNextIndex >= 0 &&
+                    !headingIndexSet.has(fh.mergedNextIndex)
+                      ? fh.mergedNextIndex
+                      : -1;
+                  if (validNext >= 0) {
+                    confirmedMergedSet.add(validNext);
+                  }
+                  initialHeadings.push({
+                    ...fh,
+                    mergedNextIndex: validNext,
+                    mergedIndices: validNext >= 0 ? [validNext] : [],
+                  });
+                }
+              }
+            }
+
+            initialHeadings.sort(
+              (a, b) => (a.paragraphIndex ?? 0) - (b.paragraphIndex ?? 0)
+            );
+          }
+
+          usedLlm = true;
+          // Bắt buộc document_title phải là Tên văn bản hợp lệ, tuyệt đối không lấy Điều/Chương
+          const rawTitle = isValidDocumentTitle(llmResult.document_title)
+            ? llmResult.document_title
+            : localOfficialTitle;
+          const chosenTitle = ensureDocumentTypePrefix(rawTitle, candidateBlocks);
+          smartBaseName = formatSmartBaseName(baseName, chosenTitle);
+        }
       }
     } catch (e) {
       console.warn('Fallback về bộ lọc Regex nội bộ cho Word do lỗi LLM:', e);
@@ -519,7 +609,6 @@ export async function processWordDocument(
 
   // THỬ NGHIỆM 2: Nếu không dùng LLM hoặc LLM không trả về kết quả -> Dùng bộ lọc Regex Heuristic cục bộ
   if (!usedLlm) {
-    const medianFontSize = getMedian(fontSizes, 13.0);
     initialHeadings = parseHeadingsFromBlocks(candidateBlocks, medianFontSize);
     // Dùng Tên văn bản chính thức đã trích xuất từ đầu tài liệu, TUYỆT ĐỐI không lấy initialHeadings[0]
     smartBaseName = formatSmartBaseName(baseName, localOfficialTitle);
@@ -532,8 +621,21 @@ export async function processWordDocument(
     if (h.paragraphIndex !== undefined) {
       mergedTitleByIndex.set(h.paragraphIndex, { title: h.title, level: h.level });
     }
-    if (h.mergedNextIndex !== undefined && h.mergedNextIndex >= 0) {
+  }
+  for (const h of initialHeadings) {
+    if (
+      h.mergedNextIndex !== undefined &&
+      h.mergedNextIndex >= 0 &&
+      !mergedTitleByIndex.has(h.mergedNextIndex)
+    ) {
       mergedRemoveSet.add(h.mergedNextIndex);
+    }
+    if (h.mergedIndices) {
+      for (const mIdx of h.mergedIndices) {
+        if (mIdx >= 0 && !mergedTitleByIndex.has(mIdx)) {
+          mergedRemoveSet.add(mIdx);
+        }
+      }
     }
   }
 

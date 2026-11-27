@@ -43,6 +43,140 @@ interface RawPdfTextToken {
   isBold: boolean;
 }
 
+interface VisualLine {
+  text: string;
+  isBold: boolean;
+  fontSize: number;
+  avgY: number;
+}
+
+const NEW_HEADING_MARKER_RE =
+  /^(?:phần|chương|mục|tiểu\s*mục|điều|phụ\s*lục|biểu\s*mẫu|mẫu\s*số|lời\s*nói\s*đầu|mở\s*đầu|kết\s*luận|quyết\s*định|part|chapter|section|article|appendix|introduction|preface|conclusion|(?:I|II|III|IV|V|VI|VII|VIII|IX|X|XI|XII|XIII|XIV|XV|XVI|XVII|XVIII|XIX|XX)\s*[.\-–—:)]|(?:\d+\.(?:\d+\.?){0,2})\s+|-)/iu;
+
+export function groupTokensIntoVisualLines(tokens: RawPdfTextToken[]): VisualLine[] {
+  if (!tokens.length) return [];
+
+  const sorted = [...tokens].sort((a, b) => {
+    if (Math.abs(b.y - a.y) > 3.5) return b.y - a.y;
+    return a.x - b.x;
+  });
+
+  const lineGroups: RawPdfTextToken[][] = [];
+  for (const tk of sorted) {
+    const lastLine = lineGroups[lineGroups.length - 1];
+    if (lastLine && Math.abs(lastLine[0].y - tk.y) <= 3.5) {
+      lastLine.push(tk);
+    } else {
+      lineGroups.push([tk]);
+    }
+  }
+
+  const result: VisualLine[] = [];
+  for (const lt of lineGroups) {
+    lt.sort((a, b) => a.x - b.x);
+    const text = cleanHeadingText(lt.map((t) => t.str).join(' '));
+    if (!text) continue;
+
+    let totalChars = 0;
+    let boldChars = 0;
+    let maxFontSize = 13.0;
+    let ySum = 0;
+
+    for (const t of lt) {
+      const len = t.str.trim().length;
+      totalChars += len;
+      if (t.isBold) boldChars += len;
+      if (t.fontSize > maxFontSize) maxFontSize = t.fontSize;
+      ySum += t.y;
+    }
+
+    result.push({
+      text,
+      isBold: totalChars > 0 && boldChars / totalChars >= 0.6,
+      fontSize: maxFontSize,
+      avgY: ySum / lt.length,
+    });
+  }
+
+  return result;
+}
+
+export function buildCandidateBlocksFromPages(
+  pagesTokens: { pageHeight: number; tokens: RawPdfTextToken[] }[],
+  pageMap: Map<number, number>,
+  targetPageNumbers?: Set<number>
+): CandidateBlock[] {
+  const candidateBlocks: CandidateBlock[] = [];
+  let runningParagraphIdx = 0;
+
+  pagesTokens.forEach(({ pageHeight, tokens }, pageIdx) => {
+    const physicalPage = pageIdx + 1;
+    if (targetPageNumbers && !targetPageNumbers.has(physicalPage)) {
+      return;
+    }
+
+    const displayedPageNum = pageMap.get(pageIdx) ?? physicalPage;
+    const footerLimitY = pageHeight * FOOTER_RATIO;
+    const headerStartY = pageHeight * (1 - HEADER_RATIO);
+    const visualLines = groupTokensIntoVisualLines(tokens);
+
+    let pendingBoldBlock: CandidateBlock | null = null;
+    let pendingBoldY = 0;
+
+    for (const line of visualLines) {
+      const inMargin = line.avgY <= footerLimitY || line.avgY >= headerStartY;
+      if (inMargin && extractPageNumberFromMarginText(line.text) !== null) {
+        continue;
+      }
+
+      const canMergeBoldContinuation =
+        pendingBoldBlock !== null &&
+        line.isBold &&
+        Math.abs(pendingBoldY - line.avgY) <= Math.max(pendingBoldBlock.fontSize, line.fontSize) * 2.1 &&
+        !NEW_HEADING_MARKER_RE.test(line.text) &&
+        pendingBoldBlock.text.length + line.text.length + 1 <= 320;
+
+      if (canMergeBoldContinuation && pendingBoldBlock) {
+        pendingBoldBlock.text = `${pendingBoldBlock.text} ${line.text}`.replace(/\s+/g, ' ').trim();
+        pendingBoldY = line.avgY;
+        continue;
+      }
+
+      if (pendingBoldBlock) {
+        candidateBlocks.push(pendingBoldBlock);
+        pendingBoldBlock = null;
+      }
+
+      if (line.isBold) {
+        pendingBoldBlock = {
+          text: line.text,
+          isBold: true,
+          fontSize: line.fontSize,
+          pageNumber: displayedPageNum,
+          paragraphIndex: runningParagraphIdx++,
+          styleLevel: null,
+        };
+        pendingBoldY = line.avgY;
+      } else {
+        candidateBlocks.push({
+          text: line.text,
+          isBold: false,
+          fontSize: line.fontSize,
+          pageNumber: displayedPageNum,
+          paragraphIndex: runningParagraphIdx++,
+          styleLevel: null,
+        });
+      }
+    }
+
+    if (pendingBoldBlock) {
+      candidateBlocks.push(pendingBoldBlock);
+    }
+  });
+
+  return candidateBlocks;
+}
+
 function getMedian(values: number[], fallback = 13.0): number {
   if (!values.length) return fallback;
   const sorted = [...values].sort((a, b) => a - b);
@@ -226,10 +360,16 @@ export async function processPdfDocument(
     }
     const page = await pdf.getPage(p);
     const viewport = page.getViewport({ scale: 1.0 });
+    try {
+      await page.getOperatorList();
+    } catch {
+      // ignore operator list errors on malformed PDFs
+    }
     const textContent = await page.getTextContent();
     const styles = textContent.styles || {};
 
     const tokens: RawPdfTextToken[] = [];
+    const fontBoldCache = new Map<string, boolean>();
 
     for (const item of textContent.items) {
       if (!('str' in item)) continue;
@@ -241,16 +381,27 @@ export async function processPdfDocument(
       const y = tx[5];
       const fontSize = Math.max(6, Math.round(Math.hypot(tx[0], tx[1]) * 10) / 10);
 
-      const fontName = (item.fontName || '').toLowerCase();
-      const styleObj = styles[item.fontName];
-      const fontFamily = (styleObj?.fontFamily || '').toLowerCase();
-      const isBold =
-        fontName.includes('bold') ||
-        fontName.includes('bd') ||
-        fontName.includes('black') ||
-        fontName.includes('heavy') ||
-        fontName.includes('demi') ||
-        fontFamily.includes('bold');
+      const fontKey = item.fontName || '';
+      let isBold = fontBoldCache.get(fontKey);
+      if (isBold === undefined) {
+        const fontName = fontKey.toLowerCase();
+        const styleObj = styles[item.fontName];
+        const fontFamily = (styleObj?.fontFamily || '').toLowerCase();
+        let realFontName = '';
+        try {
+          const fontObj = page.commonObjs.get(item.fontName) as { name?: string } | undefined;
+          realFontName = (fontObj?.name || '').toLowerCase();
+        } catch {
+          // ignore if font object is not loaded
+        }
+
+        const boldTokenRe = /(bold|bd\b|black|heavy|demi|semibold)/i;
+        isBold =
+          boldTokenRe.test(fontName) ||
+          boldTokenRe.test(fontFamily) ||
+          boldTokenRe.test(realFontName);
+        fontBoldCache.set(fontKey, isBold);
+      }
 
       tokens.push({ str, x, y, fontSize, isBold });
       allFontSizes.push(fontSize);
@@ -261,35 +412,19 @@ export async function processPdfDocument(
       tokens,
     });
 
+    const visualLinesForLlm = groupTokensIntoVisualLines(tokens);
     pagesTextForLlm.push({
       pageNumber: p,
-      text: tokens.map((t) => t.str).join(' '),
+      text: visualLinesForLlm.map((l) => `${l.isBold ? '[B] ' : ''}${l.text}`).join('\n'),
     });
   }
 
   // Trích xuất các dòng ở các trang đầu để phục vụ thuật toán nhận diện Tên văn bản chính thức (LUẬT, NGHỊ ĐỊNH...)
   const firstPagesCandidateLines: { text: string; isBold?: boolean }[] = [];
   pagesTokens.slice(0, 2).forEach(({ tokens }) => {
-    const sorted = [...tokens].sort((a, b) => {
-      if (Math.abs(b.y - a.y) > 3.5) return b.y - a.y;
-      return a.x - b.x;
-    });
-    const visualLines: RawPdfTextToken[][] = [];
-    for (const tk of sorted) {
-      const lastLine = visualLines[visualLines.length - 1];
-      if (lastLine && Math.abs(lastLine[0].y - tk.y) <= 3.5) {
-        lastLine.push(tk);
-      } else {
-        visualLines.push([tk]);
-      }
-    }
-    for (const lt of visualLines) {
-      lt.sort((a, b) => a.x - b.x);
-      const str = cleanHeadingText(lt.map((t) => t.str).join(' '));
-      if (str) {
-        const isBold = lt.some((t) => t.isBold);
-        firstPagesCandidateLines.push({ text: str, isBold });
-      }
+    const lines = groupTokensIntoVisualLines(tokens);
+    for (const l of lines) {
+      firstPagesCandidateLines.push({ text: l.text, isBold: l.isBold });
     }
   });
   const rawLocalTitle = extractOfficialDocumentTitle(firstPagesCandidateLines);
@@ -317,6 +452,11 @@ export async function processPdfDocument(
   const isScannedPdf =
     cleanTokensText.length < 350 || first3PagesChars / Math.min(numPages, 3) < 150;
 
+  const localDetectRes = isScannedPdf
+    ? { hasExisting: false, pageMap: new Map<number, number>() }
+    : detectExistingPageNumbersFromTokens(pagesTokens);
+  const medianFontSize = getMedian(allFontSizes, 13.0);
+
   let smartBaseName = baseName;
   let headings: HeadingItem[] = [];
   let hasExisting = false;
@@ -326,10 +466,23 @@ export async function processPdfDocument(
   // THỬ NGHIỆM 1: Nhận diện Mục Lục thông minh bằng Gemini LLM API nếu đã cấu hình Key
   if (isScannedPdf) {
     if (hasGeminiApiKey()) {
-      onProgress?.('Phát hiện PDF scan dạng ảnh: Đang nhận diện nội dung văn bản...', 35);
+      onProgress?.('Phát hiện PDF scan dạng ảnh: Đang nhận diện nội dung văn bản bằng AI...', 35);
       try {
-        const scanResult = await extractTocFromScannedPdfWithGemini(originalBuffer, file.name);
-        if (scanResult && (scanResult.toc_items?.length > 0 || isValidDocumentTitle(scanResult.document_title))) {
+        const scanResult = await extractTocFromScannedPdfWithGemini(originalBuffer, file.name, {
+          onChunkProgress: (completed, total, rangeLabel) => {
+            const pct = Math.min(70, 35 + Math.round((completed / Math.max(1, total)) * 35));
+            onProgress?.(
+              total > 1
+                ? `Đang đọc PDF scan bằng AI (đợt ${completed}/${total}, trang ${rangeLabel || ''})...`
+                : 'Đang nhận diện nội dung PDF scan bằng AI...',
+              pct
+            );
+          },
+        });
+        if (
+          scanResult &&
+          (scanResult.toc_items?.length > 0 || isValidDocumentTitle(scanResult.document_title))
+        ) {
           usedLlm = true;
           hasExisting = Boolean(scanResult.has_existing_page_numbers);
           const rawTitle = isValidDocumentTitle(scanResult.document_title)
@@ -337,12 +490,15 @@ export async function processPdfDocument(
             : '';
           const chosenTitle = ensureDocumentTypePrefix(rawTitle, file.name);
           smartBaseName = formatSmartBaseName(baseName, chosenTitle);
-          headings = (scanResult.toc_items || []).map((it, idx) => ({
-            id: `scan-h-${idx + 1}-${it.page}`,
-            level: it.level,
-            title: it.title,
-            pageNumber: it.page,
-          }));
+          headings = (scanResult.toc_items || []).map((it, idx) => {
+            const rawPage = Math.max(1, Number(it.page) || 1);
+            return {
+              id: `scan-h-${idx + 1}-${rawPage}`,
+              level: it.level,
+              title: it.title,
+              pageNumber: hasExisting ? rawPage : Math.min(numPages, rawPage),
+            };
+          });
           for (let i = 0; i < numPages; i++) {
             pageMap.set(i, i + 1);
           }
@@ -352,26 +508,76 @@ export async function processPdfDocument(
       }
     }
   } else if (hasGeminiApiKey()) {
-    onProgress?.('Đang phân tích cấu trúc đề mục tự động...', 35);
+    onProgress?.('Đang phân tích cấu trúc đề mục tự động bằng AI...', 35);
     try {
-      const llmResult = await extractTocFromPdfWithGemini(pagesTextForLlm, file.name);
+      const llmResult = await extractTocFromPdfWithGemini(pagesTextForLlm, file.name, {
+        onChunkProgress: (completed, total, rangeLabel) => {
+          const pct = Math.min(70, 35 + Math.round((completed / Math.max(1, total)) * 35));
+          onProgress?.(
+            total > 1
+              ? `Đang phân tích đề mục PDF bằng AI (khúc ${completed}/${total}, trang ${rangeLabel || ''})...`
+              : 'Đang phân tích cấu trúc đề mục tự động bằng AI...',
+            pct
+          );
+        },
+      });
       if (llmResult && llmResult.toc_items && llmResult.toc_items.length > 0) {
-        usedLlm = true;
-        // Bắt buộc document_title phải là Tên văn bản hợp lệ, tuyệt đối không lấy Điều/Chương
-        const rawTitle = isValidDocumentTitle(llmResult.document_title)
-          ? llmResult.document_title
-          : localOfficialTitle;
-        const chosenTitle = ensureDocumentTypePrefix(rawTitle, firstPagesCandidateLines);
-        smartBaseName = formatSmartBaseName(baseName, chosenTitle);
-        hasExisting = Boolean(llmResult.has_existing_page_numbers);
-        headings = llmResult.toc_items.map((it, idx) => ({
-          id: `llm-h-${idx + 1}-${it.page}`,
-          level: it.level,
-          title: it.title,
-          pageNumber: it.page,
-        }));
-        for (let i = 0; i < numPages; i++) {
-          pageMap.set(i, i + 1);
+        hasExisting = Boolean(llmResult.has_existing_page_numbers) || localDetectRes.hasExisting;
+        pageMap = localDetectRes.hasExisting ? localDetectRes.pageMap : new Map<number, number>();
+        if (!localDetectRes.hasExisting) {
+          for (let i = 0; i < numPages; i++) {
+            pageMap.set(i, i + 1);
+          }
+        }
+
+        const normalizeKey = (t: string, p: number) =>
+          `${p}::${t.toLowerCase().replace(/[:.\-–—\s]+$/gu, '').replace(/\s+/g, ' ').trim()}`;
+
+        const seenKeys = new Set<string>();
+        const validatedHeadings: HeadingItem[] = [];
+
+        llmResult.toc_items.forEach((it, idx) => {
+          const rawPage = Math.max(1, Number(it.page) || 1);
+          const safePage = hasExisting ? rawPage : Math.min(numPages, rawPage);
+          const key = normalizeKey(it.title, safePage);
+          if (!it.title.trim() || seenKeys.has(key)) return;
+          seenKeys.add(key);
+          validatedHeadings.push({
+            id: `llm-h-${idx + 1}-${safePage}`,
+            level: it.level,
+            title: it.title.trim(),
+            pageNumber: safePage,
+          });
+        });
+
+        // Partial fallback cục bộ cho các khúc trang bị lỗi/timeout hoặc vượt giới hạn
+        if (llmResult.failed_page_ranges && llmResult.failed_page_ranges.length > 0) {
+          const failedPageSet = new Set<number>();
+          for (const range of llmResult.failed_page_ranges) {
+            for (let p = range.startPage; p <= range.endPage; p++) {
+              failedPageSet.add(p);
+            }
+          }
+          const rangeBlocks = buildCandidateBlocksFromPages(pagesTokens, pageMap, failedPageSet);
+          const fallbackRangeHeadings = parseHeadingsFromBlocks(rangeBlocks, medianFontSize);
+          for (const fh of fallbackRangeHeadings) {
+            const key = normalizeKey(fh.title, fh.pageNumber);
+            if (!seenKeys.has(key)) {
+              seenKeys.add(key);
+              validatedHeadings.push(fh);
+            }
+          }
+        }
+
+        if (validatedHeadings.length > 0) {
+          usedLlm = true;
+          headings = validatedHeadings.sort((a, b) => a.pageNumber - b.pageNumber);
+          // Bắt buộc document_title phải là Tên văn bản hợp lệ, tuyệt đối không lấy Điều/Chương
+          const rawTitle = isValidDocumentTitle(llmResult.document_title)
+            ? llmResult.document_title
+            : localOfficialTitle;
+          const chosenTitle = ensureDocumentTypePrefix(rawTitle, firstPagesCandidateLines);
+          smartBaseName = formatSmartBaseName(baseName, chosenTitle);
         }
       }
     } catch (e) {
@@ -389,71 +595,11 @@ export async function processPdfDocument(
       headings = [];
     } else {
       onProgress?.('Đang kiểm tra số trang vùng Header / Footer (Cục bộ)...', 40);
-      const detectRes = detectExistingPageNumbersFromTokens(pagesTokens);
-      hasExisting = detectRes.hasExisting;
-      pageMap = detectRes.pageMap;
+      hasExisting = localDetectRes.hasExisting;
+      pageMap = localDetectRes.pageMap;
 
       onProgress?.('Đang trích xuất đề mục & ghép dòng tiêu đề thông minh (VI/EN)...', 65);
-
-      const candidateBlocks: CandidateBlock[] = [];
-      let runningParagraphIdx = 0;
-
-      pagesTokens.forEach(({ pageHeight, tokens }, pageIdx) => {
-        const displayedPageNum = pageMap.get(pageIdx) ?? pageIdx + 1;
-        const footerLimitY = pageHeight * FOOTER_RATIO;
-        const headerStartY = pageHeight * (1 - HEADER_RATIO);
-
-        const sorted = [...tokens].sort((a, b) => {
-          if (Math.abs(b.y - a.y) > 3.5) return b.y - a.y;
-          return a.x - b.x;
-        });
-
-        const visualLines: RawPdfTextToken[][] = [];
-        for (const tk of sorted) {
-          const lastLine = visualLines[visualLines.length - 1];
-          if (lastLine && Math.abs(lastLine[0].y - tk.y) <= 3.5) {
-            lastLine.push(tk);
-          } else {
-            visualLines.push([tk]);
-          }
-        }
-
-        for (const lineTokens of visualLines) {
-          lineTokens.sort((a, b) => a.x - b.x);
-          const rawLineText = cleanHeadingText(lineTokens.map((t) => t.str).join(' '));
-          if (!rawLineText) continue;
-
-          const avgY = lineTokens.reduce((acc, t) => acc + t.y, 0) / lineTokens.length;
-          const inMargin = avgY <= footerLimitY || avgY >= headerStartY;
-          if (inMargin && extractPageNumberFromMarginText(rawLineText) !== null) {
-            continue;
-          }
-
-          let totalChars = 0;
-          let boldChars = 0;
-          let maxFontSize = 13.0;
-
-          for (const t of lineTokens) {
-            const len = t.str.trim().length;
-            totalChars += len;
-            if (t.isBold) boldChars += len;
-            if (t.fontSize > maxFontSize) maxFontSize = t.fontSize;
-          }
-
-          const isLineBold = totalChars > 0 && boldChars / totalChars >= 0.6;
-
-          candidateBlocks.push({
-            text: rawLineText,
-            isBold: isLineBold,
-            fontSize: maxFontSize,
-            pageNumber: displayedPageNum,
-            paragraphIndex: runningParagraphIdx++,
-            styleLevel: null,
-          });
-        }
-      });
-
-      const medianFontSize = getMedian(allFontSizes, 13.0);
+      const candidateBlocks = buildCandidateBlocksFromPages(pagesTokens, pageMap);
       headings = parseHeadingsFromBlocks(candidateBlocks, medianFontSize);
 
       // Dùng Tên văn bản chính thức đã trích xuất từ đầu tài liệu, TUYỆT ĐỐI không lấy headings[0]

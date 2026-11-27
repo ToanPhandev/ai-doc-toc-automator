@@ -5,6 +5,7 @@ export interface HeadingItem {
   pageNumber: number;
   paragraphIndex?: number;
   mergedNextIndex?: number;
+  mergedIndices?: number[];
 }
 
 export interface CandidateBlock {
@@ -14,6 +15,7 @@ export interface CandidateBlock {
   pageNumber: number;
   paragraphIndex: number;
   styleLevel?: 1 | 2 | null;
+  isCentered?: boolean;
 }
 
 export interface OutputFileItem {
