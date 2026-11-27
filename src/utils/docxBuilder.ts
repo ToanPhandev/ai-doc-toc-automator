@@ -325,8 +325,52 @@ function buildCenterPageNumberFooterXml(): string {
 }
 
 /**
+ * Bật thuộc tính in đậm (<w:b/> & <w:bCs/>) cho mọi run có chữ bên trong một thẻ <w:p>
+ * ở phần thân bài Word, giữ nguyên 100% font, cỡ chữ, căn lề và nội dung gốc.
+ */
+function applyBoldToParagraphElement(xmlDoc: globalThis.Document, pEl: Element, wNs: string): void {
+  const runs = Array.from(pEl.getElementsByTagNameNS(wNs, 'r'));
+  for (const rEl of runs) {
+    const tEls = Array.from(rEl.getElementsByTagNameNS(wNs, 't'));
+    const hasText = tEls.some((t) => (t.textContent || '').trim().length > 0);
+    if (!hasText) continue;
+
+    let rPr = Array.from(rEl.childNodes).find(
+      (n) => n.nodeType === 1 && (n as Element).localName === 'rPr'
+    ) as Element | undefined;
+
+    if (!rPr) {
+      rPr = xmlDoc.createElementNS(wNs, 'w:rPr');
+      rEl.insertBefore(rPr, rEl.firstChild);
+    }
+
+    let bEl = Array.from(rPr.childNodes).find(
+      (n) => n.nodeType === 1 && (n as Element).localName === 'b'
+    ) as Element | undefined;
+    if (!bEl) {
+      bEl = xmlDoc.createElementNS(wNs, 'w:b');
+      rPr.appendChild(bEl);
+    } else {
+      bEl.removeAttribute('w:val');
+      bEl.removeAttribute('val');
+    }
+
+    let bCsEl = Array.from(rPr.childNodes).find(
+      (n) => n.nodeType === 1 && (n as Element).localName === 'bCs'
+    ) as Element | undefined;
+    if (!bCsEl) {
+      bCsEl = xmlDoc.createElementNS(wNs, 'w:bCs');
+      rPr.appendChild(bCsEl);
+    } else {
+      bCsEl.removeAttribute('w:val');
+      bCsEl.removeAttribute('val');
+    }
+  }
+}
+
+/**
  * LUỒNG A: Can thiệp cấu trúc OOXML của tệp Word (.docx) để:
- * 1. Gán style Heading 1 / Heading 2 & ghép dòng tiêu đề bị ngắt trong thân tài liệu.
+ * 1. In đậm toàn bộ đề mục Chương / Mục / Điều trong thân bài (giữ Mục lục chỉ in đậm Cấp 1).
  * 2. Chèn Mục lục tự động (TOC) vào Trang 1 + Page Break đẩy toàn bộ nội dung gốc sang Trang 2.
  * 3. Thiết lập đánh số trang tự động liên tục từ 1 tại Chính giữa chân trang (Footer - Center).
  */
@@ -362,9 +406,29 @@ export async function injectTocAndFooterIntoDocx(
     }
   }
 
-  // NON-DESTRUCTIVE: Giữ nguyên vẹn 100% tất cả các đoạn văn, font chữ, cỡ chữ,
-  // màu sắc, bảng biểu, hình ảnh của nội dung tài liệu gốc ban đầu!
-  // Tuyệt đối không xóa hay sửa đổi các thẻ <w:r> hoặc nội dung văn bản gốc.
+  // Tô đậm các đoạn đề mục (Cấp 1 & Cấp 2: Chương, Mục, Điều...) trong phần thân bài gốc,
+  // vẫn giữ nguyên vẹn 100% font chữ, cỡ chữ, bảng biểu, hình ảnh và văn bản gốc.
+  const bodyBoldIndices = new Set<number>();
+  for (const h of headings) {
+    if (h.paragraphIndex !== undefined && h.paragraphIndex >= 0) {
+      bodyBoldIndices.add(h.paragraphIndex);
+    }
+    if (h.mergedNextIndex !== undefined && h.mergedNextIndex >= 0) {
+      bodyBoldIndices.add(h.mergedNextIndex);
+    }
+    if (h.mergedIndices) {
+      for (const mIdx of h.mergedIndices) {
+        if (mIdx >= 0) {
+          bodyBoldIndices.add(mIdx);
+        }
+      }
+    }
+  }
+  for (const pIdx of bodyBoldIndices) {
+    if (pIdx >= 0 && pIdx < directParagraphs.length) {
+      applyBoldToParagraphElement(xmlDoc, directParagraphs[pIdx], wNs);
+    }
+  }
 
   // 1. Chèn các đoạn văn Mục lục + Page Break vào vị trí đầu tiên của <w:body> (Trang 1)
   const tocWrapperDoc = parser.parseFromString(

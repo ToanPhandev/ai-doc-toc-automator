@@ -158,15 +158,55 @@ function extractWordHtmlSource(buffer: ArrayBuffer): string | null {
   return isHtml ? rawSource : null;
 }
 
+function applyBoldToWordHtmlHeadings(rawHtml: string, headings: HeadingItem[]): string {
+  if (!headings.length) return rawHtml;
+
+  const headingNormSet = new Set<string>();
+  const norm = (s: string) =>
+    cleanHeadingText(s)
+      .toLowerCase()
+      .replace(/[:.\-–—\s]+$/gu, '')
+      .replace(/\s+/g, ' ')
+      .trim();
+
+  for (const h of headings) {
+    const full = norm(h.title);
+    if (full.length >= 4) headingNormSet.add(full);
+    const colonIdx = h.title.indexOf(':');
+    if (colonIdx > 0) {
+      const part1 = norm(h.title.slice(0, colonIdx));
+      const part2 = norm(h.title.slice(colonIdx + 1));
+      if (part1.length >= 4) headingNormSet.add(part1);
+      if (part2.length >= 4) headingNormSet.add(part2);
+    }
+  }
+
+  if (headingNormSet.size === 0) return rawHtml;
+
+  return rawHtml.replace(/<(p|h[1-6])\b([^>]*)>([\s\S]*?)<\/\1>/gi, (fullMatch, tag, attrs, inner) => {
+    const plain = norm(decodeHtmlEntities(String(inner).replace(/<[^>]+>/g, '')));
+    if (!plain || !headingNormSet.has(plain)) return fullMatch;
+
+    const alreadyBold =
+      /font-weight:\s*(?:bold|[6-9]00)/i.test(String(attrs)) ||
+      /^\s*<(?:b|strong)\b/i.test(String(inner));
+    if (alreadyBold) return fullMatch;
+
+    return `<${tag}${attrs}><b>${inner}</b></${tag}>`;
+  });
+}
+
 /**
  * Chèn trực tiếp khối Trang Mục lục + Page Break vào ngay đầu <body> của file Word HTML gốc,
- * giữ nguyên 100% mã HTML, CSS, bảng biểu, chữ nghiêng và chữ ký ban đầu.
+ * giữ nguyên 100% mã HTML, CSS, bảng biểu, chữ nghiêng và chữ ký ban đầu,
+ * đồng thời in đậm các đề mục Chương / Mục / Điều trong phần thân bài.
  */
 export function injectTocIntoWordHtmlDoc(
   rawHtml: string,
   baseName: string,
   headings: HeadingItem[]
 ): Blob {
+  const boldedHtml = applyBoldToWordHtmlHeadings(rawHtml, headings);
   const displayTitle = escapeHtml(formatDisplayTitle(baseName));
 
   const rowsHtml =
@@ -197,12 +237,12 @@ export function injectTocIntoWordHtmlDoc(
 </div>
 `;
 
-  const bodyOpenMatch = /<body\b[^>]*>/i.exec(rawHtml);
+  const bodyOpenMatch = /<body\b[^>]*>/i.exec(boldedHtml);
   const updatedHtml = bodyOpenMatch
-    ? rawHtml.slice(0, bodyOpenMatch.index + bodyOpenMatch[0].length) +
+    ? boldedHtml.slice(0, bodyOpenMatch.index + bodyOpenMatch[0].length) +
       tocBlock +
-      rawHtml.slice(bodyOpenMatch.index + bodyOpenMatch[0].length)
-    : tocBlock + rawHtml;
+      boldedHtml.slice(bodyOpenMatch.index + bodyOpenMatch[0].length)
+    : tocBlock + boldedHtml;
 
   return new Blob([updatedHtml], { type: 'application/msword;charset=utf-8' });
 }

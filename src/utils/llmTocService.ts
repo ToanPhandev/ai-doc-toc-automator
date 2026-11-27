@@ -11,24 +11,25 @@ import { FALLBACK_GEMINI_MODEL, getActiveGeminiModel } from '../config/aiConfig'
 
 const STORAGE_KEY = 'doc_automator_gemini_api_key';
 const VISION_API_TIMEOUT_MS = 60000; // 60 giây cho luồng Vision OCR đọc hình ảnh PDF Scan
-const WORD_CHUNK_TIMEOUT_MS = 12000; // 12 giây cho mỗi khúc Word
-const WORD_SINGLE_CALL_MAX = 120;
-const WORD_CHUNK_SIZE = 100;
+const WORD_CHUNK_TIMEOUT_MS = 25000; // 25 giây cho mỗi khúc Word (hỗ trợ tài liệu dài 1 lượt)
+const WORD_SINGLE_CALL_MAX = 400;
+const WORD_CHUNK_SIZE = 350;
 const WORD_CHUNK_OVERLAP = 3;
 const WORD_MAX_CHUNKS = 8;
 const WORD_MAX_CONCURRENT_CHUNKS = 2;
 
-const PDF_TEXT_CHUNK_TIMEOUT_MS = 12000;
-const PDF_TEXT_SINGLE_CALL_MAX_PAGES = 30;
-const PDF_TEXT_CHUNK_SIZE = 25;
+const PDF_TEXT_CHUNK_TIMEOUT_MS = 25000;
+const PDF_TEXT_SINGLE_CALL_MAX_PAGES = 120;
+const PDF_TEXT_CHUNK_SIZE = 100;
 const PDF_TEXT_CHUNK_OVERLAP = 1;
 const PDF_TEXT_MAX_CHUNKS = 8;
 const PDF_TEXT_MAX_CONCURRENT_CHUNKS = 2;
 
-const PDF_SCAN_SINGLE_CALL_MAX_PAGES = 15;
-const PDF_SCAN_BATCH_SIZE = 15;
-const PDF_SCAN_MAX_BATCHES = 6;
-const PDF_SCAN_MAX_CONCURRENT_BATCHES = 2;
+const PDF_SCAN_SINGLE_CALL_MAX_PAGES = 60;
+const PDF_SCAN_SINGLE_CALL_MAX_BYTES = 12 * 1024 * 1024; // 12 MB
+const PDF_SCAN_BATCH_SIZE = 50;
+const PDF_SCAN_MAX_BATCHES = 3;
+const PDF_SCAN_MAX_CONCURRENT_BATCHES = 1;
 
 /**
  * Gửi yêu cầu generateContent tới Gemini API kèm cơ chế tự động chuyển hướng (Auto Fallback Resilience):
@@ -321,20 +322,53 @@ export function splitPdfPagesIntoChunks(pages: PdfPageInputForLlm[]): {
 }
 
 /**
- * Chia tổng số trang PDF Scan thành các đợt cho Gemini Vision (tối đa 6 đợt = 90 trang).
+ * Chia tổng số trang PDF Scan thành các đợt cho Gemini Vision.
+ * - Với model nhẹ (flash-lite): gửi 1 lượt tối đa 25 trang (chia đợt 25 trang, tối đa 6 đợt = 150 trang) để không bị loãng chi tiết từng Điều.
+ * - Với model Flash tiêu chuẩn: gửi 1 lượt tối đa 60 trang (<= 12MB), chia đợt 50 trang (tối đa 3 đợt = 150 trang).
  */
 export function splitPageCountIntoScanBatches(
-  totalPages: number
+  totalPages: number,
+  byteLength?: number,
+  model?: string
 ): { startPage: number; endPage: number }[] {
   if (totalPages <= 0) return [];
-  if (totalPages <= PDF_SCAN_SINGLE_CALL_MAX_PAGES) {
+
+  const isLiteModel = Boolean(model && /lite/i.test(model));
+  const singleMaxPages = isLiteModel ? 25 : PDF_SCAN_SINGLE_CALL_MAX_PAGES;
+  const batchSize = isLiteModel ? 25 : PDF_SCAN_BATCH_SIZE;
+  const maxBatches = isLiteModel ? 6 : PDF_SCAN_MAX_BATCHES;
+
+  if (
+    totalPages <= singleMaxPages &&
+    (!byteLength || byteLength <= PDF_SCAN_SINGLE_CALL_MAX_BYTES)
+  ) {
     return [{ startPage: 1, endPage: totalPages }];
+  }
+
+  if (
+    totalPages <= singleMaxPages &&
+    byteLength &&
+    byteLength > PDF_SCAN_SINGLE_CALL_MAX_BYTES
+  ) {
+    const neededBatches = Math.min(
+      maxBatches,
+      Math.max(2, Math.ceil(byteLength / (10 * 1024 * 1024)))
+    );
+    const span = Math.ceil(totalPages / neededBatches);
+    const batches: { startPage: number; endPage: number }[] = [];
+    let start = 1;
+    while (start <= totalPages && batches.length < maxBatches) {
+      const end = Math.min(totalPages, start + span - 1);
+      batches.push({ startPage: start, endPage: end });
+      start = end + 1;
+    }
+    return batches;
   }
 
   const batches: { startPage: number; endPage: number }[] = [];
   let start = 1;
-  while (start <= totalPages && batches.length < PDF_SCAN_MAX_BATCHES) {
-    const end = Math.min(totalPages, start + PDF_SCAN_BATCH_SIZE - 1);
+  while (start <= totalPages && batches.length < maxBatches) {
+    const end = Math.min(totalPages, start + batchSize - 1);
     batches.push({ startPage: start, endPage: end });
     start = end + 1;
   }
@@ -403,6 +437,7 @@ Nhiệm vụ của bạn: Đọc nội dung các trang văn bản PDF dưới đ
 CÁC YÊU CẦU BẮT BUỘC:
 ${firstChunkRules}
 3. "toc_items": Danh sách các mục lục được phân cấp (KHÔNG giữ tiền tố "[B] " trong kết quả "title"):
+   - YÊU CẦU ĐẦY ĐỦ 100% (QUAN TRỌNG NHẤT): BẮT BUỘC liệt kê ĐẦY ĐỦ TỪNG ĐỀ MỤC MỘT từ đầu đến cuối (MỌI Phần, MỌI Chương, MỌI Mục, và TỪNG Điều một từ Điều 1 đến Điều cuối cùng, kèm MỌI Phụ lục/Biểu mẫu). TUYỆT ĐỐI NGHIÊM CẤM tóm tắt, rút gọn, bỏ bớt Điều, hay chỉ liệt kê Chương mà bỏ qua các Điều! Nếu văn bản có 30 hoặc 52 Điều thì toc_items PHẢI chứa đủ toàn bộ các Điều đó.
    - "level": 1 cho các mục cấp cao (LỜI NÓI ĐẦU, PHẦN, CHƯƠNG, QUYẾT ĐỊNH, PHỤ LỤC, INTRODUCTION, PART, CHAPTER, APPENDIX...) HOẶC các mục đánh số La Mã dùng dấu gạch ngang hoặc dấu chấm trong Nghị quyết/Chỉ thị/Báo cáo (VD: "I- QUAN ĐIỂM CHỈ ĐẠO", "II- MỤC TIÊU", "III- NHIỆM VỤ, GIẢI PHÁP", "IV- TỔ CHỨC THỰC HIỆN").
    - "level": 2 cho các mục con (MỤC, ĐIỀU, SECTION, ARTICLE...) HOẶC các tiểu mục đánh số "1.", "1.1.", "1.2.", "2." CHỈ KHI có dấu "[B] " (in đậm) hoặc nổi bật làm tiêu đề mục (VD: "1. Đến năm 2030", "1.1. Mục tiêu chung", "1. Đổi mới mạnh mẽ tư duy...").
    - QUY TẮC LOẠI NHIỄU BẮT BUỘC: Tuyệt đối BỎ QUA các đoạn văn liệt kê nội dung bình thường (KHÔNG có "[B] ", chữ thường dài như đoạn văn) dù bắt đầu bằng "1.", "2.", "3."... (ví dụ các khoản liệt kê dưới phần I- và phần IV- của Nghị quyết). Bỏ qua các dòng gạch phân cách "-----".
@@ -430,6 +465,7 @@ ${firstChunkRules}
         ],
         generationConfig: {
           temperature: 0.1,
+          maxOutputTokens: 16384,
           response_mime_type: 'application/json',
           response_schema: {
             type: 'OBJECT',
@@ -585,7 +621,7 @@ async function slicePdfToBase64ForBatch(
   if (
     startPage === 1 &&
     endPage === totalPages &&
-    rawBuffer.byteLength <= 10 * 1024 * 1024
+    rawBuffer.byteLength <= PDF_SCAN_SINGLE_CALL_MAX_BYTES
   ) {
     return arrayBufferToBase64(rawBuffer);
   }
@@ -597,7 +633,11 @@ async function slicePdfToBase64ForBatch(
   const copiedPages = await subDoc.copyPages(srcDoc, pageIndices);
   copiedPages.forEach((p) => subDoc.addPage(p));
   const subBytes = await subDoc.save();
-  return arrayBufferToBase64(subBytes.buffer as ArrayBuffer);
+  const slicedBuffer = subBytes.buffer.slice(
+    subBytes.byteOffset,
+    subBytes.byteOffset + subBytes.byteLength
+  ) as ArrayBuffer;
+  return arrayBufferToBase64(slicedBuffer);
 }
 
 async function requestScannedPdfBatchWithGemini(
@@ -634,6 +674,7 @@ Nhiệm vụ của bạn: Hãy đọc và nhận diện OCR trực tiếp từ h
 CÁC YÊU CẦU BẮT BUỘC:
 ${titleAndPageNumRules}
 3. "toc_items": Danh sách các đề mục:
+   - YÊU CẦU ĐẦY ĐỦ 100% (QUAN TRỌNG NHẤT): BẮT BUỘC liệt kê ĐẦY ĐỦ TỪNG ĐỀ MỤC MỘT từ trang đầu đến trang cuối của lát cắt (MỌI Phần, MỌI Chương, MỌI Mục, và TỪNG Điều một từ Điều 1 đến Điều cuối cùng, kèm MỌI Phụ lục/Biểu mẫu). TUYỆT ĐỐI NGHIÊM CẤM tóm tắt, rút gọn, bỏ bớt Điều, hay chỉ liệt kê Chương mà bỏ qua các Điều! Nếu văn bản có 30 hoặc 52 Điều thì toc_items PHẢI chứa đủ toàn bộ các Điều đó.
    - "level": 1 cho các mục lớn (PHẦN, CHƯƠNG, QUYẾT ĐỊNH, LỜI NÓI ĐẦU, PHỤ LỤC, PART, CHAPTER, APPENDIX...) HOẶC các mục đánh số La Mã dùng dấu gạch ngang/chấm trong Nghị quyết/Chỉ thị/Báo cáo (VD: "I- QUAN ĐIỂM CHỈ ĐẠO", "II- MỤC TIÊU", "III- NHIỆM VỤ, GIẢI PHÁP", "IV- TỔ CHỨC THỰC HIỆN").
    - "level": 2 cho các mục con (MỤC, ĐIỀU, KHOẢN CHÍNH, SECTION, ARTICLE...) HOẶC các tiểu mục đánh số "1.", "1.1.", "1.2.", "2." chỉ khi được in đậm nổi bật làm tiêu đề mục.
    - Tuyệt đối BỎ QUA các đoạn văn liệt kê chữ thường (không in đậm) dù bắt đầu bằng "1.", "2.", "3."... và bỏ qua các dòng gạch phân cách "-----".
@@ -666,6 +707,7 @@ ${titleAndPageNumRules}
         ],
         generationConfig: {
           temperature: 0.1,
+          maxOutputTokens: 16384,
           response_mime_type: 'application/json',
           response_schema: {
             type: 'OBJECT',
@@ -761,7 +803,7 @@ export async function extractTocFromScannedPdfWithGemini(
     return single;
   }
 
-  const batches = splitPageCountIntoScanBatches(totalPages);
+  const batches = splitPageCountIntoScanBatches(totalPages, pdfBuffer.byteLength, model);
   if (!batches.length) return null;
 
   const batchResults: (LlmPdfTocResponse | null)[] = new Array(batches.length).fill(null);
@@ -1009,6 +1051,7 @@ Nhiệm vụ: Đọc danh sách các đoạn văn dưới đây (kèm chỉ số
 CÁC YÊU CẦU BẮT BUỘC:
 ${titleRule}
 2. "toc_items":
+   - YÊU CẦU ĐẦY ĐỦ 100% (QUAN TRỌNG NHẤT): BẮT BUỘC liệt kê ĐẦY ĐỦ TỪNG ĐỀ MỤC MỘT từ đầu đến cuối (MỌI Phần, MỌI Chương, MỌI Mục, và TỪNG Điều một từ Điều 1 đến Điều cuối cùng, kèm MỌI Phụ lục/Biểu mẫu). TUYỆT ĐỐI NGHIÊM CẤM tóm tắt, rút gọn hay bỏ bớt Điều!
    - Nhận diện đầy đủ 3 nhóm tài liệu:
      a) Văn bản pháp lý/hành chính (VI/EN): Cấp 1 (level: 1) gồm PHẦN, CHƯƠNG, QUYẾT ĐỊNH, LỜI NÓI ĐẦU, PHỤ LỤC, PART, CHAPTER, APPENDIX; Cấp 2 (level: 2) gồm MỤC, TIỂU MỤC, ĐIỀU, SECTION, ARTICLE. Loại bỏ câu dẫn giải văn bản hợp nhất, căn cứ, nơi nhận, chữ ký.
      b) Nghị quyết Đảng / Chỉ thị / Kết luận / Tài liệu tổng quát (báo cáo, giáo trình, luận văn, đề án, kế hoạch):
@@ -1043,6 +1086,7 @@ ${titleRule}
         ],
         generationConfig: {
           temperature: 0.1,
+          maxOutputTokens: 16384,
           response_mime_type: 'application/json',
           response_schema: {
             type: 'OBJECT',

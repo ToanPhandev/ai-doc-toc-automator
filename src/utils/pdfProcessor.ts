@@ -569,9 +569,37 @@ export async function processPdfDocument(
           }
         }
 
-        if (validatedHeadings.length > 0) {
+        // Hậu kiểm chống bỏ sót Điều trên PDF Text (khi model nhẹ chỉ liệt kê Chương mà bỏ qua các Điều)
+        const articleTitleRe = /^(?:điều|article)\s+\d+\b/iu;
+        const aiArticleCount = validatedHeadings.filter((h) => articleTitleRe.test(h.title)).length;
+        let finalHeadings = validatedHeadings;
+        if (aiArticleCount === 0) {
+          const localAllHeadings = parseHeadingsFromBlocks(
+            buildCandidateBlocksFromPages(pagesTokens, pageMap),
+            medianFontSize
+          );
+          const localArticleCount = localAllHeadings.filter((h) =>
+            articleTitleRe.test(h.title)
+          ).length;
+          if (localArticleCount >= 2) {
+            const localKeys = new Set(
+              localAllHeadings.map((lh) => normalizeKey(lh.title, lh.pageNumber))
+            );
+            const mergedList = [...localAllHeadings];
+            for (const vh of validatedHeadings) {
+              const key = normalizeKey(vh.title, vh.pageNumber);
+              if (!localKeys.has(key)) {
+                localKeys.add(key);
+                mergedList.push(vh);
+              }
+            }
+            finalHeadings = mergedList;
+          }
+        }
+
+        if (finalHeadings.length > 0) {
           usedLlm = true;
-          headings = validatedHeadings.sort((a, b) => a.pageNumber - b.pageNumber);
+          headings = finalHeadings.sort((a, b) => a.pageNumber - b.pageNumber);
           // Bắt buộc document_title phải là Tên văn bản hợp lệ, tuyệt đối không lấy Điều/Chương
           const rawTitle = isValidDocumentTitle(llmResult.document_title)
             ? llmResult.document_title
